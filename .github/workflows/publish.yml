@@ -1,4 +1,5 @@
-# Publishes to npm when a GitHub release is published, with npm's trusted publishing: npm trusts this workflow
+# Publishes to npm when a GitHub release is published, or when run by hand (Actions > Publish > Run workflow) on
+# main to retry a version whose release failed to publish, with npm's trusted publishing: npm trusts this workflow
 # through GitHub's OIDC token, so no npm token is stored, and the package gets a provenance statement.
 # Set up on npmjs.com under the package's Settings > Trusted Publisher (user Pbatch, repo ChessCamRecorder,
 # workflow publish.yml).
@@ -7,6 +8,7 @@ name: Publish
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -24,6 +26,7 @@ jobs:
           node-version: 26
           registry-url: https://registry.npmjs.org
       - name: Check the release tag matches package.json
+        if: github.event_name == 'release'
         run: |
           version="v$(node -p "require('./package.json').version")"
           if [ "$version" != "$GITHUB_REF_NAME" ]; then
@@ -32,5 +35,6 @@ jobs:
           fi
       # Builds too, as prepare runs on install
       - run: npm ci
-      # prepublishOnly runs the tests, type check and lint first
-      - run: npm publish
+      # prepublishOnly runs the tests, type check and lint first. Verbose, as npm only logs why it turned down the
+      # workflow's OIDC token at that level, and then publishes without a login, failing with a bare 404.
+      - run: npm publish --loglevel verbose

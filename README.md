@@ -141,6 +141,10 @@ video, and `&wasm=<url>` to serve the runtime from the page's origin.
 The code came from ChessCam's `src/vision` and `src/chess` at commit `880c130`. The tracker's settings are tuned on
 replays of recorded games in ChessCam's research repo.
 
+To release, bump `version` in `package.json`, commit and push, then publish a GitHub release tagged `v<version>`
+(e.g. `v0.1.1`). `.github/workflows/publish.yml` then publishes it to npm with trusted publishing, so no npm token is
+needed.
+
 ## Licence
 
 MIT. The chess rules, SAN, FEN and PGN are its own (`src/rules`). Its dependencies have their own licences:

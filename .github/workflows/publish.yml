@@ -1,0 +1,36 @@
+# Publishes to npm when a GitHub release is published, with npm's trusted publishing: npm trusts this workflow
+# through GitHub's OIDC token, so no npm token is stored, and the package gets a provenance statement.
+# Set up on npmjs.com under the package's Settings > Trusted Publisher (user Pbatch, repo ChessCamRecorder,
+# workflow publish.yml).
+name: Publish
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  # Lets the job ask GitHub for the OIDC token npm checks
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # Trusted publishing needs npm 11.5.1 or later, which Node 26 comes with
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+          registry-url: https://registry.npmjs.org
+      - name: Check the release tag matches package.json
+        run: |
+          version="v$(node -p "require('./package.json').version")"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "The release is tagged $GITHUB_REF_NAME but package.json is $version"
+            exit 1
+          fi
+      # Builds too, as prepare runs on install
+      - run: npm ci
+      # prepublishOnly runs the tests, type check and lint first
+      - run: npm publish

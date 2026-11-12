@@ -13,6 +13,11 @@
     "tflite"
   ],
   "homepage": "https://www.chesscam.net",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Pbatch/ChessCamRecorder.git"
+  },
+  "bugs": "https://github.com/Pbatch/ChessCamRecorder/issues",
   "type": "module",
   "license": "MIT",
   "publishConfig": {

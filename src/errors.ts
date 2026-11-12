@@ -6,11 +6,7 @@ export type RecorderErrorCode =
   | "worker-stopped"
   // The model was deleted
   | "unloaded"
-  // The browser took the GPU away and the model is reloading; detection carries on once it has
-  | "gpu-reset"
-  // The model couldn't be reloaded after the GPU was lost
-  | "reload-failed"
-  // Anything else, e.g. a GPU error; the message says more
+  // Anything else; the message says more
   | "detection-failed";
 
 export class RecorderError extends Error {

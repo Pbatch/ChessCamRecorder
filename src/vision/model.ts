@@ -1,201 +1,39 @@
-import { type Accelerator, type CompiledModel, getGlobalLiteRt, isWebGPUSupported, loadAndCompile, loadLiteRt, Tensor } from "@litertjs/core";
-import { CHESSQUERIES_SIZE, LABEL_MAP, NUM_LABELS, zeros } from "../constants.js";
+import { MODEL_SIZE, LABEL_MAP, NUM_LABELS, zeros } from "../constants.js";
 import { RecorderError } from "../errors.js";
 import type { CornerName, Roi } from "../types.js";
 import type { WorkerCall, WorkerRequest, WorkerResponse } from "./worker.js";
 
-export type { Accelerator };
-
 // Square probabilities, and where each square query looked (null for models without that output)
-interface ChessqueriesOutputs {
+interface PieceModelOutputs {
   probs: Float32Array,
   centroids: Float32Array | null
 }
 
-// The loaded model, on the GPU or in a CPU worker. A null video gives blank pixels, for the warm-up.
-interface Chessqueries {
-  run: (video: HTMLVideoElement | null, roi: Roi | null) => Promise<ChessqueriesOutputs>,
+// The loaded model, in a CPU worker. A null video gives blank pixels, for the warm-up.
+interface PieceModel {
+  run: (video: HTMLVideoElement | null, roi: Roi | null) => Promise<PieceModelOutputs>,
   delete: () => void
-}
-
-interface ModelRef {
-  current: Chessqueries | null
 }
 
 // Model classes, in output order
 const CLASS_SYMBOLS: string[] = [".", "P", "N", "B", "R", "Q", "K", "p", "n", "b", "r", "q", "k"];
-const INPUT_SHAPE: number[] = [1, CHESSQUERIES_SIZE, CHESSQUERIES_SIZE, 4];
 const NUM_PROBS: number = 64 * CLASS_SYMBOLS.length;
 // Region corners clockwise from the top left when rank 8 is at the top
 const CORNERS: CornerName[] = ["a8", "h8", "h1", "a1"];
-// Pinned to a commit so a new upload cannot change the model under a deployed app
-export const DEFAULT_MODEL_URL: string = "https://huggingface.co/PBatch23888/chessq-chesscam/resolve/add16f3a5cf4da43a42256c2ee0586c6e79af34f/chessq-chesscam-dinov3-320-v5-fp16.tflite";
+// chessq-chesscam-mnv4m-320-v1, a MobileNetV4 Conv-M model distilled from v5: about 100 ms a frame on a Pixel 7a's
+// CPU, against v5's 400, and 23.9 MB against 62.5. Pinned to a commit so a new upload cannot change the model under a
+// deployed app.
+export const DEFAULT_MODEL_URL: string = "https://huggingface.co/PBatch23888/chessq-chesscam/resolve/0c3de0dd34a5e1a60d69e942045fb6dc0f82aeb4/chessq-chesscam-mnv4m-320-v1-fp16.tflite";
 // The LiteRT.js runtime must match the library exactly, so the dependency is pinned to this version
 export const LITERT_VERSION: string = "2.6.0";
 export const DEFAULT_WASM_URL: string = `https://cdn.jsdelivr.net/npm/@litertjs/core@${LITERT_VERSION}/wasm/`;
 
-// Resizes the frame straight into the input buffer, one packed RGBA u32 per pixel.
-// Each output pixel averages a grid of bilinear taps over its footprint, like the canvas's high quality downscale.
-const RESIZE_SHADER: string = `
-struct Params { origin: vec2f, size: vec2f, taps: vec2f }
-@group(0) @binding(0) var frame: texture_2d<f32>;
-@group(0) @binding(1) var smp: sampler;
-@group(0) @binding(2) var<storage, read_write> pixels: array<u32>;
-@group(0) @binding(3) var<uniform> params: Params;
-
-@compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-  if (id.x >= ${CHESSQUERIES_SIZE}u || id.y >= ${CHESSQUERIES_SIZE}u) {
-    return;
-  }
-  let taps = vec2u(params.taps);
-  var sum = vec3f(0.0);
-  for (var j = 0u; j < taps.y; j++) {
-    for (var i = 0u; i < taps.x; i++) {
-      let p = (vec2f(id.xy) + (vec2f(f32(i), f32(j)) + 0.5) / params.taps) / ${CHESSQUERIES_SIZE}.0;
-      sum += textureSampleLevel(frame, smp, params.origin + p * params.size, 0.0).rgb;
-    }
-  }
-  pixels[id.y * ${CHESSQUERIES_SIZE}u + id.x] = pack4x8unorm(vec4f(sum / f32(taps.x * taps.y), 1.0));
-}`;
-
-interface GpuResize {
-  device: GPUDevice,
-  pipeline: GPUComputePipeline,
-  sampler: GPUSampler,
-  params: GPUBuffer,
-  // The video frame is copied here, at the video's size, before it is resized
-  frame: GPUTexture | null
-}
-
 let canvas: OffscreenCanvas | null = null;
-let accelerator: Accelerator | null = null;
-// On WebGPU, the input is moved to the GPU once and every frame is resized into its buffer in place,
-// so frames never come back to the CPU
-let gpuInput: Tensor | null = null;
-let gpuResize: GpuResize | null = null;
-// Set once the browser turns out unable to copy a video into a texture
-let resizeOnCanvas = false;
-// Runs share gpuInput, so each waits for the one before it to finish reading it
-let lastRun: Promise<unknown> = Promise.resolve();
-// Set when the browser takes the GPU away (e.g. a backgrounded phone tab), so the model is reloaded
-let deviceLost: boolean = false;
-let recovering: Promise<void> | null = null;
-let recoveryError: Error | null = null;
-const RECOVERY_RUN_TIMEOUT = 2000;
 
-const toArray = async (output: Tensor): Promise<Float32Array> => {
-  const tensor: Tensor = (output.accelerator === "wasm") ? output : await output.moveTo("wasm");
-  try {
-    return tensor.toTypedArray() as Float32Array;
-  } finally {
-    tensor.delete();
-  }
-}
-
-const blankPixels = (): Uint8Array<ArrayBuffer> => new Uint8Array(CHESSQUERIES_SIZE * CHESSQUERIES_SIZE * 4);
-
-const getGpuResize = (device: GPUDevice): GpuResize => {
-  if (gpuResize?.device !== device) {
-    gpuResize = {
-      device,
-      pipeline: device.createComputePipeline({
-        layout: "auto",
-        compute: { module: device.createShaderModule({ code: RESIZE_SHADER }), entryPoint: "main" }
-      }),
-      sampler: device.createSampler({ magFilter: "linear", minFilter: "linear" }),
-      // GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, whose constants TypeScript does not declare
-      params: device.createBuffer({ size: 6 * 4, usage: 0x40 | 0x08 }),
-      frame: null
-    };
-  }
-  return gpuResize;
-}
-
-// Queued ahead of the model's GPU work, so the model reads the new frame
-const resizeOnGpu = (input: Tensor, video: HTMLVideoElement, roi: Roi | null) => {
-  const device = input.environment.webGpuDevice;
-  if (device === null) {
-    throw new Error("WebGPU device is gone");
-  }
-  const resize: GpuResize = getGpuResize(device);
-  const { pipeline, sampler, params } = resize;
-  const width: number = video.videoWidth;
-  const height: number = video.videoHeight;
-  const region: Roi = roi ?? { x: 0, y: 0, width, height };
-  // The model was trained on square-resized images, so the aspect ratio is not kept
-  device.queue.writeBuffer(params, 0, new Float32Array([
-    region.x / width, region.y / height, region.width / width, region.height / height,
-    Math.max(1, Math.ceil(region.width / CHESSQUERIES_SIZE)), Math.max(1, Math.ceil(region.height / CHESSQUERIES_SIZE))
-  ]));
-  if (resize.frame?.width !== width || resize.frame?.height !== height) {
-    resize.frame?.destroy();
-    // GPUTextureUsage.COPY_DST | TEXTURE_BINDING | RENDER_ATTACHMENT (copyExternalImageToTexture needs the last)
-    resize.frame = device.createTexture({ size: [width, height], format: "rgba8unorm", usage: 0x02 | 0x04 | 0x10 });
-  }
-  // Copied rather than imported as an external texture: in desktop Chrome on Linux, a quarter of imported frames came
-  // out green, as if their colour wasn't ready yet, and the model read them as pieces moving. Copies were never green,
-  // for about 3 to 5 ms more a frame.
-  device.queue.copyExternalImageToTexture({ source: video }, { texture: resize.frame }, [width, height]);
-  const bindGroup: GPUBindGroup = device.createBindGroup({
-    layout: pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: resize.frame.createView() },
-      { binding: 1, resource: sampler },
-      { binding: 2, resource: { buffer: input.toGpuBuffer() } },
-      { binding: 3, resource: { buffer: params } }
-    ]
-  });
-  const encoder: GPUCommandEncoder = device.createCommandEncoder();
-  const pass: GPUComputePassEncoder = encoder.beginComputePass();
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, bindGroup);
-  const groups: number = Math.ceil(CHESSQUERIES_SIZE / 8);
-  pass.dispatchWorkgroups(groups, groups);
-  pass.end();
-  device.queue.submit([encoder.finish()]);
-}
-
-// A null video gives blank pixels, for the warm-up
-const toInput = async (video: HTMLVideoElement | null, roi: Roi | null): Promise<Tensor> => {
-  if (gpuInput === null) {
-    gpuInput = await new Tensor(blankPixels(), INPUT_SHAPE).moveTo("webgpu");
-  }
-  if (video !== null) {
-    const device = gpuInput.environment.webGpuDevice;
-    // Firefox's copy takes images and canvases but not a video, so it resizes on the canvas and uploads the small result
-    // instead. Firefox on Linux has no importExternalTexture, but some builds do, so the copy throwing a TypeError
-    // also switches to the canvas, for the rest of the session.
-    if (device !== null && typeof device.importExternalTexture !== "function") {
-      resizeOnCanvas = true;
-    }
-    if (!resizeOnCanvas) {
-      try {
-        resizeOnGpu(gpuInput, video, roi);
-      } catch (error) {
-        if (!(error instanceof TypeError)) {
-          throw error;
-        }
-        resizeOnCanvas = true;
-      }
-    }
-    if (resizeOnCanvas && device !== null) {
-      device.queue.writeBuffer(gpuInput.toGpuBuffer(), 0, getPixels(video, roi));
-    }
-  }
-  return gpuInput;
-}
-
-const deleteGpuInput = () => {
-  gpuInput?.delete();
-  gpuInput = null;
-  gpuResize?.params.destroy();
-  gpuResize?.frame?.destroy();
-  gpuResize = null;
-}
+const blankPixels = (): Uint8Array<ArrayBuffer> => new Uint8Array(MODEL_SIZE * MODEL_SIZE * 4);
 
 // Output order is up to the converter, so they are told apart by size
-const toOutputs = (arrays: Float32Array[]): ChessqueriesOutputs => {
+const toOutputs = (arrays: Float32Array[]): PieceModelOutputs => {
   const probs = arrays.find((array) => array.length === NUM_PROBS);
   if (probs === undefined) {
     throw new Error("Model has no square probabilities");
@@ -203,76 +41,9 @@ const toOutputs = (arrays: Float32Array[]): ChessqueriesOutputs => {
   return { probs, centroids: arrays.find((array) => array.length === 64 * 2) ?? null };
 }
 
-const run = (model: CompiledModel, video: HTMLVideoElement | null, roi: Roi | null): Promise<ChessqueriesOutputs> => {
-  const result = lastRun.then(() => runNow(model, video, roi));
-  lastRun = result.catch(() => undefined);
-  return result;
-}
-
-const runNow = async (model: CompiledModel, video: HTMLVideoElement | null, roi: Roi | null): Promise<ChessqueriesOutputs> => {
-  const outputs: Tensor[] = await model.run(await toInput(video, roi));
-  return toOutputs(await Promise.all(outputs.map(toArray)));
-}
-
-// Firefox's shader-f16 overflows to NaN on some frames, though the same frames are fine without it.
-// Without the feature, LiteRT's fp16 precision still works, so only the feature is left out.
-// Otherwise the same device LiteRT makes for itself, which is also how a lost device is replaced.
-const setWebGpuDevice = async () => {
-  const adapter: GPUAdapter | null = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
-  if (adapter === null) {
-    throw new Error("No GPU adapter found");
-  }
-  const features: string[] = navigator.userAgent.includes("Firefox/") ? ["subgroups"] : ["shader-f16", "subgroups"];
-  // The limits LiteRT asks for on its own device
-  const device: GPUDevice = await adapter.requestDevice({
-    requiredFeatures: features.filter((feature) => adapter.features.has(feature)) as GPUFeatureName[],
-    requiredLimits: {
-      maxBufferSize: adapter.limits.maxBufferSize,
-      maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
-      maxStorageBuffersPerShaderStage: adapter.limits.maxStorageBuffersPerShaderStage,
-      maxTextureDimension2D: adapter.limits.maxTextureDimension2D
-    }
-  });
-  getGlobalLiteRt().setWebGpuDevice(device);
-}
-
-const loadWebGpu = async (modelUrl: string): Promise<Chessqueries> => {
-  // fp16 is the fastest and does not need the shader-f16 WebGPU feature
-  const model: CompiledModel = await loadAndCompile(modelUrl, {
-    accelerator: "webgpu",
-    gpuOptions: { precision: "fp16" }
-  });
-  accelerator = "webgpu";
-  try {
-    // Warm up so shader compilation happens while loading
-    await run(model, null, null);
-    // GPU errors (e.g. running out of memory) otherwise only show as wrong outputs
-    const device = gpuInput?.environment.webGpuDevice;
-    if (device) {
-      device.addEventListener("uncapturederror", (event) => {
-        console.error("WebGPU error", (event as GPUUncapturedErrorEvent).error.message);
-      });
-      // The library never destroys its device, so any loss is the browser's
-      void device.lost.then((info) => {
-        console.error("WebGPU device lost", info.reason, info.message);
-        deviceLost = true;
-      });
-    }
-  } catch (error) {
-    deleteGpuInput();
-    model.delete();
-    accelerator = null;
-    throw error;
-  }
-  return {
-    run: (video, roi) => run(model, video, roi),
-    delete: () => model.delete()
-  };
-}
-
 // The CPU model runs in a worker, as each run blocks its thread for the whole inference. The URL is relative to the
 // built file, which bundlers (e.g. Vite, webpack) follow to bundle the worker.
-const loadWorker = async (wasmUrl: string, modelUrl: string): Promise<Chessqueries> => {
+const loadWorker = async (wasmUrl: string, modelUrl: string): Promise<PieceModel> => {
   const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
   const pending = new Map<number, { resolve: (arrays: Float32Array[]) => void, reject: (error: Error) => void }>();
   let nextId: number = 0;
@@ -323,7 +94,6 @@ const loadWorker = async (wasmUrl: string, modelUrl: string): Promise<Chessqueri
     stop(error as Error);
     throw error;
   }
-  accelerator = "wasm";
   return {
     run: async (video, roi) => {
       const pixels = (video === null) ? blankPixels() : getPixels(video, roi);
@@ -331,84 +101,6 @@ const loadWorker = async (wasmUrl: string, modelUrl: string): Promise<Chessqueri
     },
     delete: () => stop(new RecorderError("unloaded", "The model was unloaded"))
   };
-}
-
-// navigator.gpu can exist without a usable adapter, e.g. on Linux Chrome
-const hasGpuAdapter = async (): Promise<boolean> => {
-  try {
-    return isWebGPUSupported() && await navigator.gpu.requestAdapter() !== null;
-  } catch {
-    return false;
-  }
-}
-
-const loadChessqueries = async (wasmUrl: string, modelUrl: string, cpuOnly: boolean): Promise<Chessqueries> => {
-  if (cpuOnly) {
-    return await loadWorker(wasmUrl, modelUrl);
-  }
-  if (await hasGpuAdapter()) {
-    try {
-      // JSPI lets WebGPU hand unsupported ops to the CPU
-      await loadLiteRt(wasmUrl, { jspi: "Suspending" in WebAssembly });
-      if (navigator.userAgent.includes("Firefox/")) {
-        await setWebGpuDevice();
-      }
-      return await loadWebGpu(modelUrl);
-    } catch (error) {
-      console.warn("WebGPU failed, falling back to the CPU", error);
-    }
-  } else {
-    console.warn("WebGPU is not available, falling back to the CPU");
-  }
-  return await loadWorker(wasmUrl, modelUrl);
-}
-
-// Swaps in a model on a new device, or on the CPU if the GPU will not come back
-const recover = async (modelRef: ModelRef, oldModel: Chessqueries, wasmUrl: string, modelUrl: string) => {
-  // A run on the lost device may never settle
-  await Promise.race([lastRun, new Promise((resolve) => setTimeout(resolve, RECOVERY_RUN_TIMEOUT))]);
-  lastRun = Promise.resolve();
-  modelRef.current = null;
-  try {
-    deleteGpuInput();
-    oldModel.delete();
-  } catch (error) {
-    console.warn("Unable to free the model on the lost device", error);
-  }
-  accelerator = null;
-  // Cleared first, so a loss of the new device is noticed too
-  deviceLost = false;
-
-  let model: Chessqueries;
-  try {
-    await setWebGpuDevice();
-    model = await loadWebGpu(modelUrl);
-  } catch (error) {
-    console.warn("WebGPU did not come back, falling back to the CPU", error);
-    model = await loadWorker(wasmUrl, modelUrl);
-  }
-  modelRef.current = model;
-}
-
-// Starts a reload after the GPU is lost, and says why detection is paused meanwhile
-const checkDevice = (modelRef: ModelRef, wasmUrl: string, modelUrl: string) => {
-  if (recoveryError !== null) {
-    throw recoveryError;
-  }
-  const model = modelRef.current;
-  if (deviceLost && recovering === null && model !== null) {
-    recovering = recover(modelRef, model, wasmUrl, modelUrl)
-      .catch((error: unknown) => {
-        console.error("Unable to reload the model", error);
-        recoveryError = new RecorderError("reload-failed", "Unable to reload the model", { cause: error });
-      })
-      .finally(() => {
-        recovering = null;
-      });
-  }
-  if (recovering !== null) {
-    throw new RecorderError("gpu-reset", "The GPU was reset, so the model is reloading");
-  }
 }
 
 // One frame's reading: a 64x13 state in square order (a1..h8), and the direction of rank 8 in video pixels, if the
@@ -419,18 +111,15 @@ export interface Detection {
 }
 
 export interface ModelOptions {
-  // The .tflite model, which must take 320x320 RGBA and give 64x13 square probabilities
+  // The .tflite model, which must take 320x320 RGBA and give 64x13 square probabilities. Self-host it to load it
+  // from the page's own origin, e.g. where huggingface.co is blocked.
   modelUrl?: string,
   // Where LiteRT.js's runtime (the files in @litertjs/core/wasm/) is served, ending in a slash. Self-host it for
   // offline use; it must be version LITERT_VERSION.
-  wasmUrl?: string,
-  // Skips WebGPU, e.g. to compare speeds
-  cpuOnly?: boolean
+  wasmUrl?: string
 }
 
 export interface Model {
-  // Where the model runs: "webgpu", or "wasm" for the CPU. Changes if the GPU is lost and the model falls back.
-  readonly accelerator: Accelerator | null,
   // Reads one frame of the video, cropped to the region if given (otherwise the whole frame)
   detect: (video: HTMLVideoElement, roi?: Roi | null) => Promise<Detection>,
   // Frees the model. A later loadModel() loads it again.
@@ -439,48 +128,41 @@ export interface Model {
 
 let loaded: { key: string, model: Promise<Model> } | null = null;
 
-const makeModel = (modelRef: ModelRef, wasmUrl: string, modelUrl: string): Model => ({
-  get accelerator() {
-    return accelerator;
-  },
-  detect: async (video, roi = null) => {
-    checkDevice(modelRef, wasmUrl, modelUrl);
-    const model = modelRef.current;
-    if (model === null) {
-      throw new RecorderError("not-ready", "The model is not loaded");
+const makeModel = (pieceModel: PieceModel): Model => {
+  let current: PieceModel | null = pieceModel;
+  return {
+    detect: async (video, roi = null) => {
+      if (current === null) {
+        throw new RecorderError("not-ready", "The model is not loaded");
+      }
+      const { probs, centroids } = await current.run(video, roi);
+      const width: number = (roi === null) ? video.videoWidth : roi.width;
+      const height: number = (roi === null) ? video.videoHeight : roi.height;
+      return {
+        update: toUpdate(probs),
+        direction: (centroids === null) ? null : toDirection(centroids, width, height)
+      };
+    },
+    delete: () => {
+      const model = current;
+      current = null;
+      loaded = null;
+      model?.delete();
     }
-    const { probs, centroids } = await model.run(video, roi);
-    const width: number = (roi === null) ? video.videoWidth : roi.width;
-    const height: number = (roi === null) ? video.videoHeight : roi.height;
-    return {
-      update: toUpdate(probs),
-      direction: (centroids === null) ? null : toDirection(centroids, width, height)
-    };
-  },
-  delete: () => {
-    const model = modelRef.current;
-    modelRef.current = null;
-    loaded = null;
-    if (model !== null) {
-      deleteGpuInput();
-      model.delete();
-      accelerator = null;
-    }
-  }
-});
+  };
+}
 
-// Loads the model on WebGPU, or on the CPU in a worker if WebGPU is missing or fails, warmed up so the first frame is
-// quick. A page has one model, as the GPU state is shared: calling again gives the same one, until it is deleted.
+// Loads the model on the CPU in a worker, warmed up so the first frame is quick. A page has one model: calling again
+// gives the same one, until it is deleted.
 export const loadModel = (options: ModelOptions = {}): Promise<Model> => {
   const modelUrl: string = options.modelUrl ?? DEFAULT_MODEL_URL;
   const wasmUrl: string = options.wasmUrl ?? DEFAULT_WASM_URL;
-  const key: string = JSON.stringify([modelUrl, wasmUrl, options.cpuOnly ?? false]);
+  const key: string = JSON.stringify([modelUrl, wasmUrl]);
   if (loaded !== null) {
     return (loaded.key === key) ? loaded.model
       : Promise.reject(new Error("A different model is already loaded; delete it first"));
   }
-  const model: Promise<Model> = loadChessqueries(wasmUrl, modelUrl, options.cpuOnly ?? false)
-    .then((chessqueries) => makeModel({ current: chessqueries }, wasmUrl, modelUrl));
+  const model: Promise<Model> = loadWorker(wasmUrl, modelUrl).then(makeModel);
   loaded = { key, model };
   void model.catch(() => {
     if (loaded?.model === model) {
@@ -490,10 +172,10 @@ export const loadModel = (options: ModelOptions = {}): Promise<Model> => {
   return model;
 }
 
-// RGBA bytes as the model takes them, viewing the canvas data without a copy. Used on the CPU, and on WebGPU without external textures.
+// RGBA bytes as the model takes them, viewing the canvas data without a copy.
 const getPixels = (video: HTMLVideoElement, roi: Roi | null): Uint8Array<ArrayBuffer> => {
   if (canvas === null) {
-    canvas = new OffscreenCanvas(CHESSQUERIES_SIZE, CHESSQUERIES_SIZE);
+    canvas = new OffscreenCanvas(MODEL_SIZE, MODEL_SIZE);
   }
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (ctx === null) {
@@ -502,11 +184,11 @@ const getPixels = (video: HTMLVideoElement, roi: Roi | null): Uint8Array<ArrayBu
   // The model was trained on square-resized images, so the aspect ratio is not kept
   ctx.imageSmoothingQuality = "high";
   if (roi === null) {
-    ctx.drawImage(video, 0, 0, CHESSQUERIES_SIZE, CHESSQUERIES_SIZE);
+    ctx.drawImage(video, 0, 0, MODEL_SIZE, MODEL_SIZE);
   } else {
-    ctx.drawImage(video, roi.x, roi.y, roi.width, roi.height, 0, 0, CHESSQUERIES_SIZE, CHESSQUERIES_SIZE);
+    ctx.drawImage(video, roi.x, roi.y, roi.width, roi.height, 0, 0, MODEL_SIZE, MODEL_SIZE);
   }
-  const imageData: ImageData = ctx.getImageData(0, 0, CHESSQUERIES_SIZE, CHESSQUERIES_SIZE);
+  const imageData: ImageData = ctx.getImageData(0, 0, MODEL_SIZE, MODEL_SIZE);
   return new Uint8Array<ArrayBuffer>(imageData.data.buffer);
 }
 

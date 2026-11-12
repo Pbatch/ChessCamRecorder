@@ -9,7 +9,7 @@ import { videoReady } from "./vision/video.js";
 
 // How often the FPS reported updates, in ms
 const FPS_INTERVAL = 1000;
-// Detections per second of video, to spare the GPU and battery. Faster playback scales it, e.g. 16 FPS at 4x.
+// Detections per second of video, to spare the CPU and battery. Faster playback scales it, e.g. 16 FPS at 4x.
 const DEFAULT_MAX_FPS = 4;
 
 export interface RecorderOptions {
@@ -23,7 +23,7 @@ export interface RecorderOptions {
   // Whether to time each move, for [%emt] in the PGN
   timed?: boolean,
   // Whether to report only moves that are final, which can't be taken back. By default a move is reported as soon as
-  // it's seen, and may be corrected a few seconds later (see onUpdate). Final moves come about a second later, and
+  // it's seen, and may be corrected a few seconds later (see onUpdate). Final moves come about 1.5 s after they are played, and
   // suit moves that go straight to an online game.
   finalMovesOnly?: boolean,
   // Detections a second at normal playback speed

@@ -1,6 +1,6 @@
 export { createRecorder, type GameChange, type Recorder, type RecorderOptions } from "./recorder.js";
 export {
-  type Accelerator, DEFAULT_MODEL_URL, DEFAULT_WASM_URL, type Detection, getOrientation, LITERT_VERSION, loadModel,
+  DEFAULT_MODEL_URL, DEFAULT_WASM_URL, type Detection, getOrientation, LITERT_VERSION, loadModel,
   type Model, type ModelOptions
 } from "./vision/model.js";
 export { type PositionProblem, readPosition, type ReadPositionResult } from "./vision/position.js";

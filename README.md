@@ -1,8 +1,8 @@
 # @chesscam/recorder
 
 Records chess moves from a camera, video file or stream of a real board, entirely in the browser. It's the move
-detection from [ChessCam](https://www.chesscam.net), packaged on its own: a piece model (WebGPU, or the CPU in a
-worker) and a move tracker that follows the game frame by frame and corrects misreads a few seconds on.
+detection from [ChessCam](https://www.chesscam.net), packaged on its own: a piece model (on the CPU, in a worker)
+and a move tracker that follows the game frame by frame and corrects misreads a few seconds on.
 
 ```ts
 import { createRecorder, loadModel } from "@chesscam/recorder";
@@ -35,7 +35,7 @@ optimizeDeps: { exclude: ["@chesscam/recorder"] }
 ```
 
 **The LiteRT.js runtime.** By default it loads from jsDelivr. Serve it yourself (copy
-`node_modules/@litertjs/core/wasm/` and pass `loadModel({ wasmUrl })`) to work offline, and so the CPU fallback can use
+`node_modules/@litertjs/core/wasm/` and pass `loadModel({ wasmUrl })`) to work offline, and so the model can use
 threads: a browser only starts the runtime's threads from the page's own origin. It must be version `LITERT_VERSION`.
 
 **Cross-origin isolation.** Threads also need these headers on the page. `credentialless` still lets the model load
@@ -46,11 +46,12 @@ Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: credentialless
 ```
 
-On the CPU in headless Chrome, a desktop managed about 1.4 frames a second on one thread and the cap of 4 with
-threads.
+On a Pixel 7a the model manages about 6 frames a second on one thread and 15 on four (it uses at most four, as more
+were slower), both above the cap of 4.
 
-**The model** loads from Hugging Face, pinned to a commit (`DEFAULT_MODEL_URL`), and can be self-hosted with
-`loadModel({ modelUrl })`.
+**The model**, chessq-chesscam-mnv4m-320-v1 (23.9 MB), loads from Hugging Face, pinned to a commit
+(`DEFAULT_MODEL_URL`). Self-host it with `loadModel({ modelUrl })` to load it from the page's own origin, e.g. where
+huggingface.co is blocked.
 
 ## Video sources
 
@@ -66,17 +67,13 @@ read as moves.
 
 ### `loadModel(options?): Promise<Model>`
 
-Loads the model on WebGPU, or on the CPU in a worker if WebGPU is missing or fails, warmed up so the first frame is
-quick. A page has one model: calling again gives the same one until it's deleted. If the browser takes the GPU away
-(e.g. a backgrounded phone tab), the model reloads itself, on the CPU if the GPU won't come back.
+Loads the model on the CPU in a worker, warmed up so the first frame is quick. A page has one model: calling again
+gives the same one until it's deleted.
 
 | Option | |
 |---|---|
 | `modelUrl` | The `.tflite` model |
 | `wasmUrl` | Where LiteRT.js's runtime is served, ending in `/` |
-| `cpuOnly` | Skip WebGPU |
-
-`model.accelerator` is `"webgpu"` or `"wasm"`.
 
 ### `createRecorder(options): Recorder`
 
@@ -88,7 +85,7 @@ Reads moves off the board until destroyed. It starts paused.
 | `roi` | The board's region, in video pixels. Without one the whole frame is read, which only works when the board fills it. |
 | `start` | The start position as FEN |
 | `timed` | Time each move, for `[%emt]` in the PGN (default true). Times are in recording time, which a pause stops. |
-| `finalMovesOnly` | Report only moves that can't be taken back, about a second later; for moves that go straight to an online game |
+| `finalMovesOnly` | Report only moves that can't be taken back, about 1.5 s after they are played; for moves that go straight to an online game |
 | `maxFps` | Detections a second at normal speed (default 4) |
 | `onUpdate(game)` | The game whenever its moves change |
 | `onFps(fps \| null)` | The detection rate about once a second, and null once it stops |
@@ -126,8 +123,6 @@ Gives `{ ok: true, fen }`, or `{ ok: false, problem }` when the board isn't a le
 | Code | |
 |---|---|
 | `not-ready` | No model, or the video has no frame |
-| `gpu-reset` | The GPU was lost and the model is reloading; detection carries on by itself |
-| `reload-failed` | The model couldn't be reloaded after that |
 | `worker-stopped` | The CPU worker crashed, e.g. out of memory |
 | `unloaded` | The model was deleted |
 | `detection-failed` | Anything else; see `message` |

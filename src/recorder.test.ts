@@ -22,7 +22,6 @@ const video = {
 } as unknown as HTMLVideoElement;
 
 const model: Model = {
-  accelerator: "wasm",
   detect: async () => {
     if (failure !== null) {
       throw failure;
@@ -190,10 +189,10 @@ describe("createRecorder", () => {
     const errors: RecorderError[] = [];
     record({ onError: (error) => errors.push(error) });
     recorder.start();
-    failure = new RecorderError("gpu-reset");
+    failure = new RecorderError("worker-stopped");
     await show([START_FEN, 1]);
     expect(errors.length).toBeGreaterThan(0);
-    expect(errors[0].code).toBe("gpu-reset");
+    expect(errors[0].code).toBe("worker-stopped");
     failure = new Error("out of memory");
     await show([START_FEN, 0.25]);
     expect(errors.at(-1)).toMatchObject({ code: "detection-failed", message: "out of memory" });

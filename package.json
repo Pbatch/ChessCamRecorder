@@ -1,7 +1,7 @@
 {
   "name": "@chesscam/recorder",
   "version": "0.1.0",
-  "description": "Record chess games from a camera or video of a real board, in the browser. Moves as SAN/PGN, on-device with WebGPU.",
+  "description": "Record chess games from a camera or video of a real board, in the browser. Moves as SAN/PGN, on-device.",
   "keywords": [
     "chess",
     "pgn",
@@ -10,7 +10,6 @@
     "move-detection",
     "camera",
     "computer-vision",
-    "webgpu",
     "tflite"
   ],
   "homepage": "https://www.chesscam.net",

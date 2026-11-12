@@ -2,7 +2,7 @@ import { createRecorder, loadModel, type Recorder, type Roi } from "@chesscam/re
 
 // ?video=<url> plays a video instead of the camera, ?t= starts it at that second, ?roi=x,y,w,h crops it to the board,
 // ?rate= sets its speed, and ?wasm=<url> serves LiteRT.js's runtime from there instead of the CDN (from the page's own
-// origin, the CPU fallback can use threads)
+// origin, the model can use threads)
 const params = new URLSearchParams(location.search);
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const video = $<HTMLVideoElement>("video");
@@ -12,7 +12,7 @@ const roi: Roi | null = (roiParam?.length === 4) ? { x: roiParam[0], y: roiParam
   height: roiParam[3] } : null;
 
 const model = await loadModel({ wasmUrl: params.get("wasm") ?? undefined });
-status.textContent = `Model loaded (${model.accelerator})`;
+status.textContent = "Model loaded";
 
 const recorder: Recorder = createRecorder({
   model, video, roi,
@@ -20,7 +20,7 @@ const recorder: Recorder = createRecorder({
     $("moves").textContent = game.moves;
   },
   onFps: (fps) => {
-    status.textContent = (fps === null) ? "Paused" : `Recording, ${fps.toFixed(1)} frames a second (${model.accelerator})`;
+    status.textContent = (fps === null) ? "Paused" : `Recording, ${fps.toFixed(1)} frames a second`;
   },
   onError: (error) => {
     status.textContent = `${error.code}: ${error.message}`;

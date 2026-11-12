@@ -1,155 +1,177 @@
 # @chesscam/recorder
 
-Records chess moves from a camera, video file or stream of a real board, entirely in the browser. It's the move
-detection from [ChessCam](https://www.chesscam.net), packaged on its own: a piece model (on the CPU, in a worker)
-and a move tracker that follows the game frame by frame and corrects misreads a few seconds on.
+[![npm](https://img.shields.io/npm/v/@chesscam/recorder)](https://www.npmjs.com/package/@chesscam/recorder)
+
+Point a camera at a real chess board and get the moves as they're played. Everything runs in the browser: no server,
+no uploads.
+
+This is the move detection from [ChessCam](https://www.chesscam.net), as a library. It works with a live camera, a
+video file or a video stream.
+
+## Install
+
+```
+npm install @chesscam/recorder
+```
+
+## Quick start
 
 ```ts
 import { createRecorder, loadModel } from "@chesscam/recorder";
 
+// 1. Load the model (about 24 MB, downloaded once)
 const model = await loadModel();
+
+// 2. Point a recorder at a <video> showing the board
 const recorder = createRecorder({
   model,
   video: document.querySelector("video")!,
-  // The board's region of the video, in video pixels
-  roi: { x: 438, y: 384, width: 444, height: 280 },
-  onUpdate: (game) => showMoves(game.moves),
-  onError: (error) => showStatus(error.code)
+  roi: { x: 438, y: 384, width: 444, height: 280 }, // where the board is, in video pixels
+  onUpdate: (game) => console.log(game.moves)       // e.g. "1. e4 e5 2. Nf3"
 });
+
+// 3. Start recording when the game starts
 recorder.start();
 
-// End & Save
+// 4. When the game ends, stop and save it as PGN
 recorder.pause();
-const pgn = recorder.pgn({ White: "Alice", Black: "Bob", Event: "Club blitz" });
+const pgn = recorder.pgn({ White: "Alice", Black: "Bob" });
 ```
 
-`examples/demo` is a working page: a camera or a video file, Start, and End & Save.
+For a full working page with a camera or video file, see [`examples/demo`](examples/demo).
 
-## Setup
+## Good to know
 
-**Bundler.** The CPU fallback runs in a worker, found with `new URL("./worker.js", import.meta.url)`, which Vite and
-webpack follow. With Vite, keep the package out of dependency pre-bundling, which would move its files:
+- **Tell it where the board is.** `roi` is the rectangle around the board in the video. Without it the whole frame is
+  used, which only works if the board fills the picture.
+- **Start when the game starts.** Anything else on camera (an empty board, hands setting up the pieces) can be mistaken
+  for moves.
+- **Earlier moves can change.** If the recorder realises it misread a move, often because a hand was in the way, it
+  fixes it a few seconds later. Always show the whole `game.moves` from each `onUpdate`, not just the newest move.
+- **Which videos work.** Anything a `<video>` element can play and the page can read the pixels of: a camera, a local
+  file, a WebRTC stream, or HLS/DASH served with CORS. YouTube or Twitch embeds and DRM-protected video can't be read.
+
+## Setup with a bundler
+
+The model runs in a web worker, which Vite and webpack pick up automatically. With Vite, add this to your config so the
+worker file is found:
 
 ```ts
 optimizeDeps: { exclude: ["@chesscam/recorder"] }
 ```
 
-**The LiteRT.js runtime.** By default it loads from jsDelivr. Serve it yourself (copy
-`node_modules/@litertjs/core/wasm/` and pass `loadModel({ wasmUrl })`) to work offline, and so the model can use
-threads: a browser only starts the runtime's threads from the page's own origin. It must be version `LITERT_VERSION`.
+## Making it faster (optional)
 
-**Cross-origin isolation.** Threads also need these headers on the page. `credentialless` still lets the model load
-from Hugging Face.
+By default the model runs on one thread, about 6 frames a second on a Pixel 7a. That's already more than the 4 frames
+a second it reads by default. To use up to four threads (about 15 frames a second):
 
-```
-Cross-Origin-Opener-Policy: same-origin
-Cross-Origin-Embedder-Policy: credentialless
-```
+1. Send these headers with your page:
 
-On a Pixel 7a the model manages about 6 frames a second on one thread and 15 on four (it uses at most four, as more
-were slower), both above the cap of 4.
+   ```
+   Cross-Origin-Opener-Policy: same-origin
+   Cross-Origin-Embedder-Policy: credentialless
+   ```
 
-**The model**, chessq-chesscam-mnv4m-320-v1 (23.9 MB), loads from Hugging Face, pinned to a commit
-(`DEFAULT_MODEL_URL`). Self-host it with `loadModel({ modelUrl })` to load it from the page's own origin, e.g. where
-huggingface.co is blocked.
+2. Serve the LiteRT.js runtime from your own site: copy `node_modules/@litertjs/core/wasm/` into your public files and
+   pass its URL with `loadModel({ wasmUrl: "/litert/" })`. It must be version `LITERT_VERSION`.
 
-## Video sources
-
-Anything a `<video>` can play and a page can read the pixels of: a camera (`getUserMedia`), a file (blob URL), a
-WebRTC `MediaStream`, or HLS/DASH served with CORS and played with `crossOrigin="anonymous"`. A cross-origin iframe
-(YouTube, Twitch) or DRM-protected video can't be read. Detection runs at up to `maxFps` frames a second (default 4),
-scaled by the video's playback rate.
-
-Start recording when the game starts: frames of anything else (title cards, an empty board, hands setting up) can be
-read as moves.
+Serving the runtime yourself also lets the recorder work offline. You can host the model file yourself too, with
+`loadModel({ modelUrl })`. By default it comes from Hugging Face.
 
 ## API
 
-### `loadModel(options?): Promise<Model>`
+### `loadModel(options?)`
 
-Loads the model on the CPU in a worker, warmed up so the first frame is quick. A page has one model: calling again
-gives the same one until it's deleted.
+Loads the model and returns a promise of it. Calling it again returns the same model.
 
-| Option | |
+| Option | What it does |
 |---|---|
-| `modelUrl` | The `.tflite` model |
-| `wasmUrl` | Where LiteRT.js's runtime is served, ending in `/` |
+| `modelUrl` | Load the `.tflite` model from here instead of Hugging Face |
+| `wasmUrl` | Load the LiteRT.js runtime from here (a folder URL ending in `/`) instead of jsDelivr |
 
-### `createRecorder(options): Recorder`
+### `createRecorder(options)`
 
-Reads moves off the board until destroyed. It starts paused.
+Creates a recorder. It starts paused; call `start()` to begin.
 
-| Option | |
+| Option | What it does |
 |---|---|
-| `model`, `video` | Required |
-| `roi` | The board's region, in video pixels. Without one the whole frame is read, which only works when the board fills it. |
-| `start` | The start position as FEN |
-| `timed` | Time each move, for `[%emt]` in the PGN (default true). Times are in recording time, which a pause stops. |
-| `finalMovesOnly` | Report only moves that can't be taken back, about 1.5 s after they are played; for moves that go straight to an online game |
-| `maxFps` | Detections a second at normal speed (default 4) |
-| `onUpdate(game)` | The game whenever its moves change |
-| `onFps(fps \| null)` | The detection rate about once a second, and null once it stops |
-| `onOrientation(corners)` | The board's corners clockwise from the region's top left, when it turns |
-| `onDetect(detection)` | Each frame read |
-| `onError(error)` | A frame failed; detection carries on with the next |
+| `model` | The model from `loadModel()` (required) |
+| `video` | The `<video>` element to read (required) |
+| `roi` | Where the board is: `{ x, y, width, height }` in video pixels |
+| `start` | The starting position as FEN, if not the normal start |
+| `timed` | Record how long each move took, saved in the PGN (default `true`) |
+| `finalMovesOnly` | Only report moves once they're certain, about 1.5 s after they're played. Useful when sending moves to an online game. |
+| `maxFps` | How many frames a second to read (default 4) |
+| `onUpdate(game)` | Called whenever the moves change |
+| `onError(error)` | Called when a frame fails. Recording carries on. |
+| `onFps(fps)` | The current frame rate, about once a second (`null` once it stops) |
+| `onOrientation(corners)` | Called when it works out which way round the board is |
+| `onDetect(detection)` | Called with the raw result of every frame |
 
-**A later update can change earlier moves.** When the tracker finds it misread a move (often a capture and recapture
-that a hand over the board seemed to show), it replaces it. Keep the whole game from each `onUpdate`, not just the
-newest move.
+A recorder has these methods and properties:
 
-| Method | |
+| | What it does |
 |---|---|
-| `start()`, `pause()` | A pause counts as no time, for move times or for corrections |
-| `game`, `running` | The game so far, and whether frames are being read |
-| `setGame({ moves, start?, fromOpponent?, times? })` | Changes the game other than by the board, e.g. a takeback or an online opponent's move. The tracker starts again from it. |
-| `reset(start?)` | A new game |
-| `setRoi(roi)`, `setVideo(video)` | |
-| `pgn(headers?)` | The game as PGN, with the seven standard tags, any extra headers, and `[%emt]` move times |
-| `destroy()` | |
+| `start()` / `pause()` | Start or pause reading. Paused time doesn't count towards move times. |
+| `game` | The game so far |
+| `running` | Whether it's currently reading frames |
+| `pgn(headers?)` | The game as PGN text, with any headers you pass (e.g. `White`, `Event`) |
+| `reset(start?)` | Start a new game |
+| `setGame({ moves, start?, fromOpponent?, times? })` | Replace the game yourself, e.g. for a takeback or an online opponent's move |
+| `setRoi(roi)` / `setVideo(video)` | Change where the board is, or which video to read |
+| `destroy()` | Stop and clean up |
 
-A game has `moves` (numbered SAN, e.g. `1. e4 e5 2. Nf3`), `fen`, `start`, `lastMove` (UCI), `fromOpponent` and
-`times` (ms since recording started, per move).
+A **game** has:
+
+| | |
+|---|---|
+| `moves` | The moves so far, e.g. `"1. e4 e5 2. Nf3"` |
+| `fen` | The current position |
+| `start` | The starting position |
+| `lastMove` | The last move, e.g. `"g1f3"` |
+| `fromOpponent` | Whether the last move came from `setGame` rather than the board |
+| `times` | When each move was played, in ms since recording started |
 
 ### `readPosition(model, video, roi?, turn?)`
 
-Reads the position on the board, averaged over three frames, to start a game somewhere other than the start position.
-Gives `{ ok: true, fen }`, or `{ ok: false, problem }` when the board isn't a legal position (`"kings"`,
-`"pawns-on-backrank"`, ...).
+Reads the current position from the board, to start recording a game that's already under way. Returns
+`{ ok: true, fen }`, or `{ ok: false, problem }` if the board doesn't show a legal position (e.g. `"kings"`,
+`"pawns-on-backrank"`).
 
 ### Errors
 
-`RecorderError` has a `code` for the app to show in its own words:
+Errors are a `RecorderError` with a `code`, so you can show your own message:
 
-| Code | |
+| Code | Meaning |
 |---|---|
-| `not-ready` | No model, or the video has no frame |
-| `worker-stopped` | The CPU worker crashed, e.g. out of memory |
+| `not-ready` | The model isn't loaded or the video hasn't got a frame yet |
+| `worker-stopped` | The model's worker crashed, e.g. out of memory |
 | `unloaded` | The model was deleted |
-| `detection-failed` | Anything else; see `message` |
+| `detection-failed` | Something else went wrong; see `error.message` |
 
 ## Development
 
 ```
 npm install
 npm run check   # tests, types, lint
-npm run build   # dist/
+npm run build   # builds dist/
 ```
 
-To try the demo, run `npm install && npm run dev` in `examples/demo`. Add `?video=<url>&t=<start s>&roi=x,y,w,h` to play a
-video, and `&wasm=<url>` to serve the runtime from the page's origin.
+To run the demo: `cd examples/demo && npm install && npm run dev`. You can add `?video=<url>&t=<start s>&roi=x,y,w,h`
+to the URL to play a video, and `&wasm=<url>` to load the runtime from the page's own site.
 
 The code came from ChessCam's `src/vision` and `src/chess` at commit `880c130`. The tracker's settings are tuned on
 replays of recorded games in ChessCam's research repo.
 
-To release, bump `version` in `package.json`, commit and push, then publish a GitHub release tagged `v<version>`
-(e.g. `v0.1.1`). `.github/workflows/publish.yml` then publishes it to npm with trusted publishing, so no npm token is
+To release: bump `version` in `package.json`, commit and push, then publish a GitHub release tagged `v<version>`
+(e.g. `v0.1.1`). `.github/workflows/publish.yml` publishes it to npm with trusted publishing, so no npm token is
 needed.
 
 ## Licence
 
-MIT. The chess rules, SAN, FEN and PGN are its own (`src/rules`). Its dependencies have their own licences:
+MIT. The chess rules, SAN, FEN and PGN code is its own (`src/rules`). Its dependencies have their own licences:
 
 - [LiteRT.js](https://www.npmjs.com/package/@litertjs/core), which runs the model, is Apache-2.0.
-- The default model, [chessq-chesscam](https://huggingface.co/PBatch23888/chessq-chesscam), is loaded at runtime, not
-  shipped in the package, and is under the PolyForm Noncommercial License 1.0.0. Commercial use needs a separate
-  licence for it.
+- The default model, [chessq-chesscam](https://huggingface.co/PBatch23888/chessq-chesscam), is downloaded at runtime,
+  not included in the package. It is under the PolyForm Noncommercial License 1.0.0, so commercial use needs a
+  separate licence for it.

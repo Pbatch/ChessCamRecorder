@@ -1,6 +1,6 @@
 {
   "name": "@chesscam/recorder",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Record chess games from a camera or video of a real board, in the browser. Moves as SAN/PGN, on-device.",
   "keywords": [
     "chess",

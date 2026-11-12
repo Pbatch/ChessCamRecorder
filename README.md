@@ -149,6 +149,22 @@ Errors are a `RecorderError` with a `code`, so you can show your own message:
 | `unloaded` | The model was deleted |
 | `detection-failed` | Something else went wrong; see `error.message` |
 
+### Games, moves and rules
+
+For apps that keep the game themselves (e.g. in a store) and pass changes to the recorder with `setGame`:
+
+| Export | |
+|---|---|
+| `newGame(start?)`, `makePgn(game, headers?)` | A game with no moves, and a game as PGN |
+| `makeBoard(game)`, `GameBoard` | The board after a game's moves, to play more (`playSan`, `playUci`, `undo`) and read its `moves`, `fen`, `history` |
+| `makeUpdatePayload(board, fromOpponent?)` | A board's `moves`, `fen`, `lastMove` and `fromOpponent`, for a `Game` |
+| `getMoveText(board)` | The last one or two moves, numbered, e.g. `3...Nc6 4.Bb5` |
+| `replay(probs, fps, start?)` | Runs saved model outputs through the tracking, frame by frame, giving the moves and when each was played; for scoring the tracking on recorded games |
+
+The chess rules are exported too: `Position` (legal moves, `play`, `isCheck`, `outcome`, `fen()`), `parseFen`,
+`makeFen`, `parseSan`, `makeSan`, `parseUci`, `makeUci`, and the types `Color`, `Role`, `Piece`, `Square`,
+`SquareName` and `Move`. Castling is the king's two-square move, e.g. `e1g1`.
+
 ## Development
 
 ```

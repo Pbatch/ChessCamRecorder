@@ -148,5 +148,11 @@ replays of recorded games in ChessCam's research repo.
 
 ## Licence
 
-AGPL-3.0-only, as ChessCam is. It depends on [chessops](https://github.com/niklasf/chessops) (GPL-3.0-or-later) and
-[LiteRT.js](https://www.npmjs.com/package/@litertjs/core) (Apache-2.0).
+MIT. Its dependencies have their own licences:
+
+- [chessops](https://github.com/niklasf/chessops), for the chess rules, SAN, FEN and PGN, is GPL-3.0-or-later. An app
+  that bundles this package bundles chessops too, so it must meet the GPL.
+- [LiteRT.js](https://www.npmjs.com/package/@litertjs/core), which runs the model, is Apache-2.0.
+- The default model, [chessq-chesscam](https://huggingface.co/PBatch23888/chessq-chesscam), is loaded at runtime, not
+  shipped in the package, and is under the PolyForm Noncommercial License 1.0.0. Commercial use needs a separate
+  licence for it.

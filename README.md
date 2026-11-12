@@ -143,9 +143,7 @@ replays of recorded games in ChessCam's research repo.
 
 ## Licence
 
-MIT. The chess rules, SAN, FEN and PGN are its own (`src/rules`), tested against perft counts and against
-[chessops](https://github.com/niklasf/chessops), which is a dev dependency only and is not shipped. Its other
-dependencies have their own licences:
+MIT. The chess rules, SAN, FEN and PGN are its own (`src/rules`). Its dependencies have their own licences:
 
 - [LiteRT.js](https://www.npmjs.com/package/@litertjs/core), which runs the model, is Apache-2.0.
 - The default model, [chessq-chesscam](https://huggingface.co/PBatch23888/chessq-chesscam), is loaded at runtime, not

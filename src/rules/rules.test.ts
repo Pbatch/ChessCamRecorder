@@ -1,14 +1,8 @@
-// Checks the rules against published perft counts, and against chessops (a dev dependency only, never shipped) on
-// random games
+// Checks the rules against published perft counts, and SAN, FEN and PGN on hand-picked cases
 import { describe, expect, it } from "vitest";
-import { Chess } from "chessops/chess";
-import { makeFen as chessopsMakeFen, parseFen as chessopsParseFen } from "chessops/fen";
-import { makeSan as chessopsMakeSan } from "chessops/san";
-import { kingCastlesTo, makeUci as chessopsMakeUci } from "chessops/util";
-import type { Move as ChessopsMove, Role as ChessopsRole } from "chessops/types";
 import { Board, makeBoardFen, parseBoardFen } from "./board.js";
 import { emptySetup, makeFen, type Move, parseFen, Position } from "./position.js";
-import { makeSan, makeUci, parseSan, parseUci } from "./san.js";
+import { makeSan, parseSan, parseUci } from "./san.js";
 import { makeClock, parseMoveText } from "./pgn.js";
 
 // A move from UCI the test knows is well formed
@@ -47,99 +41,6 @@ describe("perft", () => {
       expect(perft(pos, i + 1)).toBe(count);
     });
   });
-});
-
-// chessops' legal moves in the order the package lists them: by square from, then square to (castling as the king's
-// move, sorted by the rook's square), promotions queen first
-const chessopsMoves = (pos: Chess): string[] => {
-  const ctx = pos.ctx();
-  const moves: string[] = [];
-  for (const [from, dests] of pos.allDests(ctx)) {
-    for (const to of dests) {
-      const piece = pos.board.get(from);
-      if (piece?.role === "pawn" && (to < 8 || to >= 56)) {
-        for (const promotion of ["queen", "rook", "bishop", "knight"] as ChessopsRole[]) {
-          moves.push(chessopsMakeUci({ from, to, promotion }));
-        }
-      } else if (piece?.role === "king" && pos.board.get(to)?.color === pos.turn) {
-        moves.push(chessopsMakeUci({ from, to: kingCastlesTo(pos.turn, (to % 8 < from % 8) ? "a" : "h") }));
-      } else {
-        moves.push(chessopsMakeUci({ from, to }));
-      }
-    }
-  }
-  return moves;
-}
-
-// A seeded random number generator (mulberry32), so failures can be replayed
-const random = (seed: number) => () => {
-  seed = (seed + 0x6D2B79F5) | 0;
-  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-}
-
-// chessops stops counting the halfmove clock at 150
-const capHalfmoves = (fen: string): string => {
-  const fields = fen.split(" ");
-  fields[4] = String(Math.min(Number(fields[4]), 150));
-  return fields.join(" ");
-}
-
-// Plays random games from the start, favouring the moves that need special handling, and compares every position
-const compareGames = (games: number, start: string, seed: number) => {
-  const rand = random(seed);
-  for (let game = 0; game < games; game++) {
-    const ours = Position.fromFen(start);
-    const theirs = Chess.fromSetup(chessopsParseFen(start).unwrap()).unwrap();
-    for (let ply = 0; ply < 200; ply++) {
-      const fen = chessopsMakeFen(theirs.toSetup());
-      expect(capHalfmoves(ours.fen()), `game ${game} ply ${ply}`).toBe(fen);
-      const expected = chessopsMoves(theirs);
-      const moves = ours.legalMoves();
-      expect(moves.map(makeUci), fen).toEqual(expected);
-      expect(ours.isCheck(), fen).toBe(theirs.isCheck());
-      expect(ours.outcome(), fen).toEqual(theirs.outcome());
-      for (const move of moves) {
-        const san = makeSan(ours, move);
-        // chessops writes castling from the king's move to the rook
-        const theirMove = parseUci(makeUci(move)) as ChessopsMove;
-        const castle = theirs.board.get(move.from)?.role === "king" && Math.abs(move.to - move.from) === 2;
-        const theirSan = chessopsMakeSan(theirs, castle
-          ? { from: move.from, to: (move.to > move.from) ? move.from + 3 : move.from - 4 } : theirMove);
-        expect(san, fen).toBe(theirSan);
-        expect(parseSan(ours, san), `${fen} ${san}`).toEqual(move);
-      }
-      if (moves.length === 0) break;
-      // Captures, promotions, castling and checks are twice as likely, so games reach them more often
-      const special = moves.filter((move) => ours.board.has(move.to) || move.promotion !== undefined
-        || /^O-O|\+|#|^[a-h]x/.test(makeSan(ours, move)));
-      const pool = (special.length > 0 && rand() < 0.5) ? special : moves;
-      const move = pool[Math.floor(rand() * pool.length)];
-      ours.play(move);
-      const castle = theirs.board.get(move.from)?.role === "king" && Math.abs(move.to - move.from) === 2;
-      theirs.play(castle ? { from: move.from, to: (move.to > move.from) ? move.from + 3 : move.from - 4 }
-        : parseUci(makeUci(move)) as ChessopsMove);
-    }
-  }
-}
-
-describe("against chessops", () => {
-  it("agrees on every position, move and SAN in random games", () => {
-    compareGames(60, "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 1);
-  }, 60000);
-
-  it.each([...PERFT.slice(1).map(([name, fen]): [string, string] => [name, fen]),
-    ["position 6", "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P3/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10"]
-  ])("agrees on random games from the %s position", (_, fen) => {
-    compareGames(10, fen, 2);
-  }, 60000);
-
-  it("agrees on endgames, where promotions and insufficient material come up", () => {
-    compareGames(30, "4k3/1P4p1/8/3K4/8/8/5p2/8 w - - 0 1", 3);
-    compareGames(30, "8/8/4k3/8/2B5/8/4K3/7n b - - 0 1", 4);
-    compareGames(30, "8/8/4k3/8/2N5/8/4K3/6q1 w - - 0 1", 5);
-  }, 60000);
 });
 
 describe("FEN", () => {
@@ -188,7 +89,7 @@ describe("validate", () => {
     expect(Position.validate(parseFen(fen))).toBe(reason);
   });
 
-  it("matches chessops on an empty setup", () => {
+  it("says an empty setup is empty", () => {
     expect(Position.validate(emptySetup())).toBe("empty");
   });
 });

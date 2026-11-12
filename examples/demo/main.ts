@@ -1,4 +1,4 @@
-import { createRecorder, loadModel, type Recorder, type Roi } from "chesscam-recorder";
+import { createRecorder, loadModel, type Recorder, type Roi } from "@chesscam/recorder";
 
 // ?video=<url> plays a video instead of the camera, ?t= starts it at that second, ?roi=x,y,w,h crops it to the board,
 // ?rate= sets its speed, and ?wasm=<url> serves LiteRT.js's runtime from there instead of the CDN (from the page's own

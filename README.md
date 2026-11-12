@@ -1,11 +1,11 @@
-# chesscam-recorder
+# @chesscam/recorder
 
 Records chess moves from a camera, video file or stream of a real board, entirely in the browser. It's the move
 detection from [ChessCam](https://www.chesscam.net), packaged on its own: a piece model (WebGPU, or the CPU in a
 worker) and a move tracker that follows the game frame by frame and corrects misreads a few seconds on.
 
 ```ts
-import { createRecorder, loadModel } from "chesscam-recorder";
+import { createRecorder, loadModel } from "@chesscam/recorder";
 
 const model = await loadModel();
 const recorder = createRecorder({
@@ -31,7 +31,7 @@ const pgn = recorder.pgn({ White: "Alice", Black: "Bob", Event: "Club blitz" });
 webpack follow. With Vite, keep the package out of dependency pre-bundling, which would move its files:
 
 ```ts
-optimizeDeps: { exclude: ["chesscam-recorder"] }
+optimizeDeps: { exclude: ["@chesscam/recorder"] }
 ```
 
 **The LiteRT.js runtime.** By default it loads from jsDelivr. Serve it yourself (copy

@@ -9,5 +9,5 @@ export default defineConfig({
     fs: { strict: false }
   },
   // Pre-bundling would move the package's files, and its worker is found relative to them
-  optimizeDeps: { exclude: ["chesscam-recorder"] }
+  optimizeDeps: { exclude: ["@chesscam/recorder"] }
 });

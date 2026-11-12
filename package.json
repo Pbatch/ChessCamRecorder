@@ -1,11 +1,23 @@
 {
-  "name": "chesscam-recorder",
+  "name": "@chesscam/recorder",
   "version": "0.1.0",
-  "description": "Records chess moves from a camera or video of a real board, in the browser",
+  "description": "Record chess games from a camera or video of a real board, in the browser. Moves as SAN/PGN, on-device with WebGPU.",
+  "keywords": [
+    "chess",
+    "pgn",
+    "chessboard",
+    "board-recognition",
+    "move-detection",
+    "camera",
+    "computer-vision",
+    "webgpu",
+    "tflite"
+  ],
+  "homepage": "https://www.chesscam.net",
   "type": "module",
   "license": "AGPL-3.0-only",
-  "engines": {
-    "node": ">=26"
+  "publishConfig": {
+    "access": "public"
   },
   "exports": {
     ".": {
@@ -25,7 +37,8 @@
     "test": "vitest run",
     "tsc": "tsc",
     "lint": "biome lint src --error-on-warnings",
-    "check": "npm test && npm run tsc && npm run lint"
+    "check": "npm test && npm run tsc && npm run lint",
+    "prepublishOnly": "npm run check"
   },
   "dependencies": {
     "@litertjs/core": "2.6.0",

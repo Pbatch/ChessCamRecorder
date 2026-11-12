@@ -1,4 +1,4 @@
-import type { Position } from "chessops/chess";
+import type { Position } from "../rules/position.js";
 import type { MovesPair } from "../types.js";
 import { EMPTY, NUM_LABELS, pieceToLabel } from "../constants.js";
 

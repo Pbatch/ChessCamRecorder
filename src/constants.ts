@@ -1,4 +1,4 @@
-import type { Piece, Role, SquareName } from "chessops/types";
+import type { Piece, Role, SquareName } from "./rules/board.js";
 
 export const START_FEN: string = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 export const CHESSQUERIES_SIZE: number = 320;

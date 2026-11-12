@@ -1,6 +1,7 @@
-import { defaultGame, defaultHeaders, makeComment, makeOutcome, makePgn as writePgn, parsePgn } from "chessops/pgn";
 import { type GameBoard, makeBoard } from "./chess/board.js";
+import { Position } from "./rules/position.js";
 import { START_FEN } from "./constants.js";
+import { makeClock, makeOutcome, type PgnMove, writePgn } from "./rules/pgn.js";
 import type { Game } from "./types.js";
 
 // Everything a move changes; the start position is kept, and the times worked out
@@ -49,25 +50,21 @@ export const updateTimes = (game: Game, moves: string, elapsed?: number, ago: (n
 // time each move took as a [%emt] comment
 export const makePgn = (game: Pick<Game, "moves" | "start"> & Partial<Pick<Game, "times">>,
   headers: Record<string, string> = {}): string => {
-  const pgnGame = parsePgn(game.moves)[0] ?? defaultGame();
+  const board = makeBoard(game);
   const times: number[] = game.times ?? [];
-  let index = 0;
-  for (const node of pgnGame.moves.mainline()) {
-    if (index < times.length) {
-      // Whole seconds, as detection is only good to about a second
-      const emt = Math.round((times[index] - (times[index - 1] ?? 0)) / 1000);
-      node.comments = [makeComment({ emt: Math.max(0, emt) })];
-    }
-    index += 1;
-  }
-  pgnGame.headers = defaultHeaders();
-  pgnGame.headers.set("Result", makeOutcome(makeBoard(game).position.outcome()));
+  const moves: PgnMove[] = board.history.map(({ san }, index) => (index < times.length)
+    // Whole seconds, as detection is only good to about a second
+    ? { san, comment: `[%emt ${makeClock((times[index] - (times[index - 1] ?? 0)) / 1000)}]` }
+    : { san });
+  const tags = new Map<string, string>([["Event", "?"], ["Site", "?"], ["Date", "????.??.??"], ["Round", "?"],
+    ["White", "?"], ["Black", "?"], ["Result", makeOutcome(board.position.outcome())]]);
   if (game.start !== START_FEN) {
-    pgnGame.headers.set("SetUp", "1");
-    pgnGame.headers.set("FEN", game.start);
+    tags.set("SetUp", "1");
+    tags.set("FEN", game.start);
   }
   for (const [key, value] of Object.entries(headers)) {
-    pgnGame.headers.set(key, value);
+    tags.set(key, value);
   }
-  return writePgn(pgnGame);
+  const start = Position.fromFen(game.start);
+  return writePgn(tags, moves, start.turn, start.fullmoves, tags.get("Result") ?? "*");
 }

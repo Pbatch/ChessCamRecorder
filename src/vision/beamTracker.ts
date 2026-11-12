@@ -1,6 +1,5 @@
-import type { Position } from "chessops/chess";
-import { makeFen } from "chessops/fen";
-import { parseSan } from "chessops/san";
+import type { Position } from "../rules/position.js";
+import { parseSan } from "../rules/san.js";
 import { GameBoard, makeBoard } from "../chess/board.js";
 import { getMovesPairs } from "../chess/moves.js";
 import type { MovesPair, TrackedGame } from "../types.js";
@@ -261,4 +260,4 @@ const parted = (a: History, b: History): number => {
 }
 
 // The position, without the move counters, which differ between move orders that reach it
-const positionKey = (position: Position): string => makeFen(position.toSetup()).split(" ").slice(0, 4).join(" ");
+const positionKey = (position: Position): string => position.fen().split(" ").slice(0, 4).join(" ");

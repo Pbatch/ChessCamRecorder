@@ -1,8 +1,5 @@
-import { makeFen } from "chessops/fen";
-import { Chess, IllegalSetup } from "chessops/chess";
-import { emptySetup } from "chessops/setup";
-import { Board } from "chessops/board";
-import type { Color } from "chessops/types";
+import { Board, type Color } from "../rules/board.js";
+import { emptySetup, type IllegalSetup, makeFen, Position } from "../rules/position.js";
 import { EMPTY, LABEL_MAP, NUM_LABELS, PIECE_SYMBOLS, labelToPiece, zeros } from "../constants.js";
 import { RecorderError } from "../errors.js";
 import type { Roi } from "../types.js";
@@ -10,16 +7,9 @@ import type { Model } from "./model.js";
 import { videoReady } from "./video.js";
 
 // Why a board read from the camera isn't a legal position
-export type PositionProblem = "empty" | "kings" | "opposite-check" | "pawns-on-backrank" | "other";
+export type PositionProblem = IllegalSetup;
 
-const PROBLEMS: Record<string, PositionProblem> = {
-  [IllegalSetup.Empty]: "empty",
-  [IllegalSetup.Kings]: "kings",
-  [IllegalSetup.OppositeCheck]: "opposite-check",
-  [IllegalSetup.PawnsOnBackrank]: "pawns-on-backrank"
-};
-
-export type ReadPositionResult = { ok: true, fen: string } | { ok: false, problem: PositionProblem, message: string };
+export type ReadPositionResult = { ok: true, fen: string } | { ok: false, problem: PositionProblem };
 
 const NUM_FRAMES: number = 3;
 const BLACK_KING: number = LABEL_MAP.k;
@@ -120,9 +110,9 @@ export const readPosition = async (model: Model, video: HTMLVideoElement, roi: R
   setup.board = stateToBoard(average);
   setup.turn = turn;
 
-  const pos = Chess.fromSetup(setup);
-  if (pos.isErr) {
-    return { ok: false, problem: PROBLEMS[pos.error.message] ?? "other", message: pos.error.message };
+  const problem = Position.validate(setup);
+  if (problem !== null) {
+    return { ok: false, problem };
   }
   return { ok: true, fen: makeFen(setup) };
 }

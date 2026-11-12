@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { makeBoardFen } from "chessops/fen";
+import { makeBoardFen } from "../rules/board.js";
 import { kingSquares, stateToBoard } from "./position.js";
 import { EMPTY, LABEL_MAP, NUM_LABELS, SQUARE_MAP, zeros } from "../constants.js";
 import { oneHotState } from "../test/helpers.js";

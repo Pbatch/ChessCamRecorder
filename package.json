@@ -41,12 +41,12 @@
     "prepublishOnly": "npm run check"
   },
   "dependencies": {
-    "@litertjs/core": "2.6.0",
-    "chessops": "^0.15.1"
+    "@litertjs/core": "2.6.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.6",
     "@types/node": "^26.6.6",
+    "chessops": "^0.15.1",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
   }

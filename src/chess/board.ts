@@ -1,19 +1,16 @@
-import { Chess, type Position } from "chessops/chess";
-import { parseFen, makeFen } from "chessops/fen";
-import type { Move } from "chessops/types";
-import { parseSan, makeSan } from "chessops/san";
-import { makeUci, parseUci } from "chessops/util";
-import { parsePgn } from "chessops/pgn";
+import { type Move, Position } from "../rules/position.js";
+import { makeSan, makeUci, parseSan, parseUci } from "../rules/san.js";
+import { parseMoveText } from "../rules/pgn.js";
 
 type HistoryEntry = { move: Move; san: string };
 
-const positionFromFen = (fen: string): Chess => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
+const positionFromFen = (fen: string): Position => Position.fromFen(fen);
 
 // A game from its start position, keeping the moves played so they can be numbered and undone
 export class GameBoard {
   readonly start: string;
   readonly history: HistoryEntry[] = [];
-  #position: Chess;
+  #position: Position;
 
   constructor(start: string) {
     this.start = start;
@@ -25,7 +22,7 @@ export class GameBoard {
   }
 
   get fen(): string {
-    return makeFen(this.#position.toSetup());
+    return this.#position.fen();
   }
 
   // The last move in UCI, or "" before any move
@@ -80,14 +77,11 @@ export class GameBoard {
   }
 }
 
-// The board for a game's start position and moves (numbered SAN, as the store keeps them)
+// The board for a game's start position and moves (numbered SAN, as a Game keeps them)
 export const makeBoard = (game: { moves: string, start: string }): GameBoard => {
   const board = new GameBoard(game.start);
-  const games = parsePgn(game.moves);
-  if (games.length > 0) {
-    for (const node of games[0].moves.mainline()) {
-      board.playSan(node.san);
-    }
+  for (const san of parseMoveText(game.moves)) {
+    board.playSan(san);
   }
   return board;
 }

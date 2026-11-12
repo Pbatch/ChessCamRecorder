@@ -1,4 +1,4 @@
-import { parseFen } from "chessops/fen";
+import { parseFen } from "../rules/position.js";
 import { EMPTY, NUM_LABELS, START_FEN, pieceToLabel, zeros } from "../constants.js";
 import type { Game } from "../types.js";
 
@@ -18,7 +18,7 @@ const UNSURE = (1 - SURE) / (NUM_LABELS - 1);
 
 // A 64x13 state in square order (a1..h8) that is sure of every square in the FEN
 export const oneHotState = (fen: string): number[][] => {
-  const board = parseFen(fen).unwrap().board;
+  const board = parseFen(fen).board;
   const state: number[][] = zeros(64, NUM_LABELS).map((row) => row.fill(UNSURE));
   for (let i = 0; i < 64; i++) {
     const piece = board.get(i);

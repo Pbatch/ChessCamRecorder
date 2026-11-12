@@ -1,30 +1,8 @@
-import { parseFen, makeFen } from "chessops/fen";
-import { Chess, type Position } from "chessops/chess";
-import { type Move, type Role, isNormal } from "chessops/types";
-import { makeSan } from "chessops/san";
-import { kingCastlesTo, makeUci } from "chessops/util";
+import { type Move, parseFen, type Position } from "../rules/position.js";
+import { makeSan, makeUci } from "../rules/san.js";
 import { SQUARE_MAP, LABEL_MAP, SQUARE_NAMES, pieceToLabel } from "../constants.js";
 import type { MovesData, MovesPair, SquaresData } from "../types.js";
 import type { GameBoard } from "./board.js";
-
-function* legalMoves(pos: Position): Generator<Move> {
-  const ctx = pos.ctx();
-  for (const [from, dests] of pos.allDests(ctx)) {
-    for (const to of dests) {
-      const piece = pos.board.get(from);
-      if (piece?.role === 'pawn' && (to < 8 || to >= 56)) {
-        for (const promotion of ['queen', 'rook', 'bishop', 'knight'] as Role[]) {
-          yield { from, to, promotion };
-        }
-      } else if (piece?.role === 'king' && pos.board.get(to)?.color === pos.turn) {
-        const side = to % 8 < from % 8 ? 'a' : 'h';
-        yield { from, to: kingCastlesTo(pos.turn, side) };
-      } else {
-        yield { from, to };
-      }
-    }
-  }
-}
 
 const castlingMap: { [id: string]: number[] } = {
   "g1": [SQUARE_MAP.h1, SQUARE_MAP.f1, LABEL_MAP.R],
@@ -34,8 +12,6 @@ const castlingMap: { [id: string]: number[] } = {
 }
 
 const getData = (pos: Position, move: Move) => {
-  if (!isNormal(move)) return null;
-
   const fromSquares: number[] = [move.from];
   const toSquares: number[] = [move.to];
 
@@ -95,15 +71,12 @@ const combineData = (move1Data: MovesData, move2Data: MovesData) => {
 }
 
 export const getMovesPairs = (board: Position) => {
-  const fen = makeFen(board.toSetup());
-  const setup = parseFen(fen).unwrap();
-  const pos = Chess.fromSetup(setup).unwrap();
+  const pos = board.clone();
 
   const movesPairs: MovesPair[] = [];
 
-  for (const move1 of legalMoves(pos)) {
+  for (const move1 of pos.legalMoves()) {
     const data = getData(pos, move1);
-    if (!data) continue;
     // Only first moves are shown, so only they need SAN
     const move1Data = { ...data, san: makeSan(pos, move1) };
 
@@ -111,9 +84,8 @@ export const getMovesPairs = (board: Position) => {
     pos2.play(move1);
 
     let done = true;
-    for (const move2 of legalMoves(pos2)) {
+    for (const move2 of pos2.legalMoves()) {
       const move2Data = getData(pos2, move2);
-      if (!move2Data) continue;
 
       const movesData = combineData(move1Data, move2Data);
       const movesPair: MovesPair = {
@@ -140,7 +112,7 @@ export const getMovesPairs = (board: Position) => {
 
 // The last one or two moves, numbered from the board's start position, e.g. "3...Nc6 4.Bb5"
 export const getMoveText = (board: GameBoard): string => {
-  const setup = parseFen(board.start).unwrap();
+  const setup = parseFen(board.start);
   const initialPly = (setup.fullmoves - 1) * 2 + (setup.turn === 'white' ? 0 : 1);
   const firstIndex = Math.max(0, board.history.length - 2);
 

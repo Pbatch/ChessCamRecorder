@@ -1,0 +1,14 @@
+{
+  "name": "chesscam-recorder-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite"
+  },
+  "dependencies": {
+    "chesscam-recorder": "file:../.."
+  },
+  "devDependencies": {
+    "vite": "^8.3.7"
+  }
+}

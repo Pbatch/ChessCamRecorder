@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Recorder demo</title>
+  <style>
+    body { font: 16px system-ui, sans-serif; margin: 16px; background: #fff; color: #111; }
+    video { max-width: 100%; background: #000; }
+    #moves { font-family: ui-monospace, monospace; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <p>
+    <button id="camera">Use camera</button>
+    <input id="file" type="file" accept="video/*">
+    <button id="start" disabled>Start</button>
+    <button id="end" disabled>End &amp; Save</button>
+  </p>
+  <p id="status">Loading the model…</p>
+  <video id="video" muted playsinline></video>
+  <h3>Moves</h3>
+  <p id="moves"></p>
+  <h3>PGN</h3>
+  <pre id="pgn"></pre>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

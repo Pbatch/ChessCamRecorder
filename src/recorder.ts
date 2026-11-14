@@ -68,7 +68,29 @@ export interface Recorder {
   destroy: () => void
 }
 
-const sameGame = (a: Pick<Game, "start" | "moves" | "fromOpponent">, b: Pick<Game, "start" | "moves" | "fromOpponent">) =>
+// Waits between loop ticks, in ms, when no detection is due sooner, about as often as animation frames
+const TICK_MS = 16;
+
+// Ticks the loop from a worker's timer: a hidden page gets no animation frames and its own timers are throttled to
+// once a second, but a worker's timers are not, so recording carries on while the tab is in the background
+const createTicker = (onTick: () => void) => {
+  const url = URL.createObjectURL(new Blob(["onmessage = (event) => setTimeout(() => postMessage(0), event.data)"]));
+  const worker = new Worker(url);
+  URL.revokeObjectURL(url);
+  worker.onmessage = onTick;
+  return {
+    after: (ms: number) => worker.postMessage(ms),
+    stop: () => worker.terminate()
+  };
+}
+
+// requestVideoFrameCallback only fires for frames the page shows, so it stops while the tab is hidden or the app is in
+// the background, though the video still has new frames to read. After this long without one, every frame counts as
+// new. Checking document.hidden instead misses some of these cases, e.g. a backgrounded Android Chrome with DevTools
+// attached.
+const FRAME_STALL_MS = 1000;
+
+const sameGame =(a: Pick<Game, "start" | "moves" | "fromOpponent">, b: Pick<Game, "start" | "moves" | "fromOpponent">) =>
   (a.start === b.start) && (a.moves === b.moves) && (a.fromOpponent === b.fromOpponent);
 
 // Reads moves off a board in a video, a frame at a time, until destroyed. Starts paused: call start().
@@ -86,7 +108,6 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
   let playing: boolean = false;
   let direction: number[] | null = null;
   let orientationKey: string = "";
-  let requestId: number | undefined;
   // Detections started since the FPS was last reported, which is about once a second
   let fpsSince: number = 0;
   let fpsFrames: number = 0;
@@ -98,6 +119,8 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
   let frameVideo: HTMLVideoElement | null = null;
   let frameCallbackId: number | undefined;
   let newFrame: boolean = true;
+  // When requestVideoFrameCallback last fired, or the video was first watched
+  let lastFrameTime: number = 0;
   // A clock that stops while detection is paused, in ms. The tracker runs on it, so a pause neither counts as time
   // for its settings nor uses up the time a move can still be corrected in, and moves are timed on it, from where it
   // was when detection last started on a game without moves.
@@ -117,11 +140,13 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
     frameVideo = next;
     frameCallbackId = undefined;
     newFrame = true;
+    lastFrameTime = performance.now();
     if (next === null || typeof next.requestVideoFrameCallback !== "function") {
       return;
     }
     const onFrame = () => {
       newFrame = true;
+      lastFrameTime = performance.now();
       frameCallbackId = next.requestVideoFrameCallback(onFrame);
     }
     frameCallbackId = next.requestVideoFrameCallback(onFrame);
@@ -205,7 +230,7 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
       // changed other than by it.
       if (!playing || !videoReady(video)) {
         stopped();
-      } else if (newFrame && now >= nextRunTime) {
+      } else if ((newFrame || (now - lastFrameTime) >= FRAME_STALL_MS) && now >= nextRunTime) {
         await detectFrame(now);
       }
     } catch (error) {
@@ -213,15 +238,14 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
       options.onError?.(toRecorderError(error));
     } finally {
       if (active) {
-        requestId = requestAnimationFrame(() => {
-          void loop();
-        });
+        ticker.after(Math.max(TICK_MS, nextRunTime - performance.now()));
       }
     }
   }
-  requestId = requestAnimationFrame(() => {
+  const ticker = createTicker(() => {
     void loop();
   });
+  ticker.after(0);
 
   return {
     get game() {
@@ -261,9 +285,7 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
     destroy: () => {
       active = false;
       playing = false;
-      if (requestId !== undefined) {
-        cancelAnimationFrame(requestId);
-      }
+      ticker.stop();
       watchFrames(null);
     }
   };

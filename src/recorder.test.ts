@@ -10,7 +10,7 @@ const AFTER_E4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1";
 const AFTER_E4_E5 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2";
 const FRAME_MS = 250;
 
-// A fake page: animation frames run when the test ticks the clock, and the model sees whatever `board` is
+// A fake page: the recorder's ticks run when the test ticks the clock, and the model sees whatever `board` is
 let clock: number;
 let frames: Map<number, FrameRequestCallback>;
 let nextFrameId: number;
@@ -31,7 +31,7 @@ const model: Model = {
   delete: () => undefined
 };
 
-// Runs the page's animation frames for `seconds`, a frame at a time, letting each frame's detection finish
+// Runs the recorder's ticks for `seconds`, a frame at a time, letting each frame's detection finish
 const run = async (seconds: number) => {
   for (let elapsed = 0; elapsed < 1000 * seconds; elapsed += FRAME_MS) {
     clock += FRAME_MS;
@@ -66,12 +66,21 @@ beforeEach(() => {
   board = START_FEN;
   failure = null;
   vi.spyOn(performance, "now").mockImplementation(() => clock);
-  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-    const id = nextFrameId++;
-    frames.set(id, callback);
-    return id;
+  // The recorder's ticker: each tick it asks for runs on the test's next frame
+  vi.stubGlobal("Worker", class {
+    onmessage: (() => void) | null = null;
+    private ids = new Set<number>();
+    postMessage() {
+      const id = nextFrameId++;
+      this.ids.add(id);
+      frames.set(id, () => this.onmessage?.());
+    }
+    terminate() {
+      this.ids.forEach((id) => {
+        frames.delete(id);
+      });
+    }
   });
-  vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
 });
 
 afterEach(() => {
@@ -208,6 +217,15 @@ describe("createRecorder", () => {
     expect(updates).toEqual([]);
     recorder.setVideo(video);
     await show([AFTER_E4, 2]);
+    expect(recorder.game.moves).toBe("1. e4");
+  });
+
+  it("reads the board when the video stops reporting frames, as in a background tab", async () => {
+    // requestVideoFrameCallback never fires, as when the page isn't shown
+    const hiddenVideo = { ...video, requestVideoFrameCallback: () => 1, cancelVideoFrameCallback: () => undefined };
+    record({ video: hiddenVideo as unknown as HTMLVideoElement });
+    recorder.start();
+    await show([START_FEN, 2], [AFTER_E4, 3]);
     expect(recorder.game.moves).toBe("1. e4");
   });
 

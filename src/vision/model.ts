@@ -94,20 +94,10 @@ const loadWorker = async (wasmUrl: string, modelUrl: string): Promise<PieceModel
     stop(error as Error);
     throw error;
   }
-  // The last frame run and its outputs. A frozen video gives the same pixels again, e.g. a camera in a hidden tab on
-  // Android, which stops the camera, and the model would give the same outputs, so they are reused instead.
-  let last: { pixels: Uint8Array, arrays: Float32Array[] } | null = null;
   return {
     run: async (video, roi) => {
       const pixels = (video === null) ? blankPixels() : getPixels(video, roi);
-      if (last !== null && samePixels(last.pixels, pixels)) {
-        return toOutputs(last.arrays);
-      }
-      // Copied, as sending the pixels hands their buffer to the worker
-      const sent = pixels.slice();
-      const arrays = await send({ type: "run", pixels }, [pixels.buffer]);
-      last = { pixels: sent, arrays };
-      return toOutputs(arrays);
+      return toOutputs(await send({ type: "run", pixels }, [pixels.buffer]));
     },
     delete: () => stop(new RecorderError("unloaded", "The model was unloaded"))
   };
@@ -180,31 +170,6 @@ export const loadModel = (options: ModelOptions = {}): Promise<Model> => {
     }
   });
   return model;
-}
-
-// Whether two frames' pixels are exactly the same. A live camera's never are, as its sensor noise changes every pixel.
-export const samePixels = (a: Uint8Array, b: Uint8Array): boolean => {
-  if (a.length !== b.length) {
-    return false;
-  }
-  // Four bytes at a time where both views allow it, as for whole canvas buffers
-  let words: number = 0;
-  if ((a.byteOffset % 4 === 0) && (b.byteOffset % 4 === 0)) {
-    words = a.length >> 2;
-    const a32 = new Uint32Array(a.buffer, a.byteOffset, words);
-    const b32 = new Uint32Array(b.buffer, b.byteOffset, words);
-    for (let i = 0; i < words; i++) {
-      if (a32[i] !== b32[i]) {
-        return false;
-      }
-    }
-  }
-  for (let i = words << 2; i < a.length; i++) {
-    if (a[i] !== b[i]) {
-      return false;
-    }
-  }
-  return true;
 }
 
 // RGBA bytes as the model takes them, viewing the canvas data without a copy.

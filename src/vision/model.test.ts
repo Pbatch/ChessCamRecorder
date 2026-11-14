@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { getOrientation, LITERT_VERSION, samePixels, toDirection, toUpdate } from "./model.js";
+import { getOrientation, LITERT_VERSION, toDirection, toUpdate } from "./model.js";
 import { LABEL_MAP, NUM_LABELS, SQUARE_MAP } from "../constants.js";
 import { MODEL_CLASSES, modelProbs, oneHotState } from "../test/helpers.js";
 
@@ -92,31 +92,6 @@ describe("toDirection", () => {
 
   it("doesn't return NaN for degenerate centroids", () => {
     expect(toDirection(new Float32Array(128).fill(0.5), 100, 100)).toEqual([0, 0]);
-  });
-});
-
-describe("samePixels", () => {
-  const frame = () => Uint8Array.from({ length: 320 * 320 * 4 }, (_, i) => (i * 7) % 256);
-
-  it("matches a frame that hasn't changed", () => {
-    expect(samePixels(frame(), frame())).toBe(true);
-  });
-
-  it("tells apart frames that differ in one byte, wherever it is", () => {
-    for (const i of [0, 3, 4, 320 * 320 * 2 + 1, 320 * 320 * 4 - 1]) {
-      const changed = frame();
-      changed[i] ^= 1;
-      expect(samePixels(frame(), changed)).toBe(false);
-    }
-  });
-
-  it("compares views by their own bytes, at any offset and length", () => {
-    const a = new Uint8Array([9, 1, 2, 3, 4, 5, 6]);
-    const b = new Uint8Array([1, 2, 3, 4, 5, 6]);
-    expect(samePixels(a.subarray(1), b)).toBe(true);
-    expect(samePixels(a.subarray(1, 5), b.subarray(0, 4))).toBe(true);
-    expect(samePixels(a, b)).toBe(false);
-    expect(samePixels(a.subarray(1), new Uint8Array([1, 2, 3, 4, 5, 7]))).toBe(false);
   });
 });
 

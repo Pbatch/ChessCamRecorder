@@ -4,7 +4,13 @@ export {
   type ModelOptions
 } from "./vision/model.js";
 export { type PositionProblem, readPosition, type ReadPositionResult } from "./vision/position.js";
-export { replay, type TimedMove, type Until } from "./vision/replay.js";
+export {
+  type PlayReplay, type PlayReplayOptions, type PlaySend, replay, replayPlay, type TimedMove, type Until
+} from "./vision/replay.js";
+// The move tracking, for scoring it on recorded games with other settings
+export { type BeamMove, type BeamOptions, BeamTracker, type MoveTracker } from "./vision/beamTracker.js";
+export { DEFAULT_PLAY_OPTIONS, type PlayOptions, PlayTracker } from "./vision/playTracker.js";
+export type { BayesianOptions } from "./vision/bayesianTracker.js";
 export { videoReady } from "./vision/video.js";
 export { RecorderError, type RecorderErrorCode } from "./errors.js";
 export { type GameUpdate, makePgn, makeUpdatePayload, newGame } from "./game.js";

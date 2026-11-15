@@ -100,7 +100,7 @@ Creates a recorder. It starts paused; call `start()` to begin.
 | `roi` | Where the board is: `{ x, y, width, height }` in video pixels |
 | `start` | The starting position as FEN, if not the normal start |
 | `timed` | Record how long each move took, saved in the PGN (default `true`) |
-| `finalMovesOnly` | Only report moves once they're certain, about 1.5 s after they're played. Useful when sending moves to an online game. |
+| `play` | Play one side against an online opponent: only report the user's move, once it's certain (about 1.75 s after it's played), and pass each of the opponent's moves with `setGame` and `fromOpponent`. The board may lag behind the opponent's move while the user copies it over. |
 | `maxFps` | How many frames a second to read (default 4) |
 | `onUpdate(game)` | Called whenever the moves change |
 | `onError(error)` | Called when a frame fails. Recording carries on. |
@@ -160,6 +160,8 @@ For apps that keep the game themselves (e.g. in a store) and pass changes to the
 | `makeUpdatePayload(board, fromOpponent?)` | A board's `moves`, `fen`, `lastMove` and `fromOpponent`, for a `Game` |
 | `getMoveText(board)` | The last one or two moves, numbered, e.g. `3...Nc6 4.Bb5` |
 | `replay(probs, fps, start?)` | Runs saved model outputs through the tracking, frame by frame, giving the moves and when each was played; for scoring the tracking on recorded games |
+| `replayPlay(probs, fps, options)` | The same, as play mode runs: the user plays one side, and the other side's moves come from a simulated Lichess before the board shows them; gives each move sent, and whether Lichess took it |
+| `BeamTracker`, `PlayTracker`, `DEFAULT_PLAY_OPTIONS` | The move trackers (`PlayTracker` for play mode, `BeamTracker` otherwise) and play mode's settings, to replay with other settings |
 
 The chess rules are exported too: `Position` (legal moves, `play`, `isCheck`, `outcome`, `fen()`), `parseFen`,
 `makeFen`, `parseSan`, `makeSan`, `parseUci`, `makeUci`, and the types `Color`, `Role`, `Piece`, `Square`,

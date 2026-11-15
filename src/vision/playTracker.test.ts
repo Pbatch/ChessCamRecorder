@@ -120,4 +120,40 @@ describe("PlayTracker", () => {
       expect(game.moves).toBe(`${fromLichess.moves} Bg4`);
     });
   });
+
+  describe("with a misread that lasts", () => {
+    // 1. d4 Nf6 2. Nf3 d5 3. Bf4 e6 4. e3 c5, with the user playing White, then 5. Nbd2 Nc6 from Lichess
+    const board = new GameBoard(START_FEN);
+    ["d2d4", "g8f6", "g1f3", "d7d5", "c1f4", "e7e6", "e2e3", "c7c5"].forEach((uci) => { board.playUci(uci); });
+    const start: Game = { ...makeGame(), ...makeUpdatePayload(board) };
+    const beforeNbd2 = oneHotState(board.fen);
+    board.playUci("b1d2");
+    const afterNbd2 = board.fen;
+    board.playUci("b8c6");
+    const afterNc6 = board.fen;
+    const fromLichess: Game = { ...makeGame(), ...makeUpdatePayload(board, true) };
+    // The model reads the pawn on e3 as on e4, as if 6. e4 were played
+    const misread = (fen: string) => {
+      const state = oneHotState(fen);
+      const pawn = state[SQUARE_MAP.e3];
+      state[SQUARE_MAP.e3] = state[SQUARE_MAP.e4];
+      state[SQUARE_MAP.e4] = pawn;
+      return state;
+    };
+    const replies = (misreadTime: number) => {
+      const tracker = new PlayTracker({ misreadTime });
+      // 5. Nbd2 is sent, then the misread lasts two minutes while the opponent thinks
+      const sent = run(tracker, start, [beforeNbd2, 2], [oneHotState(afterNbd2), 3], [misread(afterNbd2), 120]);
+      expect(sent.moves).toMatch(/5\. Nbd2$/);
+      return run(tracker, fromLichess, [misread(afterNc6), 10]).moves;
+    };
+
+    it("sends it as a move without learning misreads", () => {
+      expect(replies(0)).toMatch(/Nc6 6\. e4$/);
+    });
+
+    it("sends nothing once it has learnt the misread", () => {
+      expect(replies(60)).toBe(fromLichess.moves);
+    });
+  });
 });

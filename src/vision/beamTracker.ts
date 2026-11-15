@@ -6,9 +6,8 @@ import type { MovesPair, TrackedGame } from "../types.js";
 import { BayesianTracker, DEFAULT_BAYESIAN_OPTIONS, type BayesianOptions } from "./bayesianTracker.js";
 
 // Follows several ways the game may have gone at once, so a move played for good can still be taken back when later
-// frames fit a game without it better, such as a capture and recapture that a hand over the board seemed to show. Used
-// wherever moves can be changed after they are shown; play mode, whose moves go to Lichess straight away, uses a single
-// BayesianTracker.
+// frames fit a game without it better, such as a capture and recapture that a hand over the board seemed to show. Used in
+// every mode but play, whose moves go to Lichess straight away and can't be corrected, which has PlayTracker.
 //
 // Each history is a list of moves since the moves that are final, and a BayesianTracker looking on from the position
 // after them. Where a tracker would play a move for good, the history splits in two: a copy plays it, taking that
@@ -31,37 +30,23 @@ export interface BeamOptions {
   // as the scores scale with it
   margin: number,
   // Seconds after which the best history's moves are final
-  horizon: number,
-  // Whether to show only final moves, for play mode, which sends each move to Lichess as soon as it is shown
-  finalOnly: boolean,
-  // Whether, after the opponent's move comes from Lichess, to wait until the board shows it before looking for the
-  // next. Until the user has played it on the board, the board is a move behind the game, and a move and reply that
-  // take it back explain it well: after 5... Nc6 with the knight still on b8, 6. Bb8 Nxb8 does, wrong only on f4.
-  waitForOpponent: boolean
+  horizon: number
 }
 
 // Chosen on earlier models (see this file's git history) and kept for the current one, whose tracker settings were
 // tuned with them. The margin is 37.5 per unit of evidenceWeight.
-const DEFAULT_BEAM_OPTIONS: BeamOptions = { width: 4, margin: 37.5, horizon: 10, finalOnly: false,
-  waitForOpponent: false };
-
-// Play mode can't take a move back once Lichess has it, so it only sends final moves, and as the clock is running, a
-// move is final after at most a second: a move the tracker plays is sent once its history is still the best a second
-// on, or sooner once no other history is within the margin. The opponent's moves come from Lichess, which changes the
-// game, so the tracker starts again after each. Its trackers play a move on its own, as the reply comes from Lichess.
-// It waits for each of the opponent's moves to be played on the board before looking for the user's.
-// Its evidenceWeight is 0.4, below the 2.5 the other modes use, as it replays best in play mode (62 edits to fix capped
-// at 10 a game, 149 uncapped, 35 of 42 games perfect; 0.25 needed 110, 0.5 72, 0.75 85, 1.0 95, 1.5 108). Moves need
-// more evidence to be sent, so they reach Lichess later: a median 1.45 s after they are played (90th percentile
-// 1.95 s), against 0.95 s (1.35 s) at 1.5.
-export const PLAY_TRACKER_OPTIONS: Partial<BayesianOptions> = { provisional: false, evidenceWeight: 0.4 };
-export const PLAY_BEAM_OPTIONS: Partial<BeamOptions> = { horizon: 1, finalOnly: true, waitForOpponent: true };
+const DEFAULT_BEAM_OPTIONS: BeamOptions = { width: 4, margin: 37.5, horizon: 10 };
 
 // What the tracker shows: the whole game, and when each move was played (the `now` of the frame its tracker played
 // it on, or null for a provisional move or one from before the tracker started)
 export interface BeamMove {
   board: GameBoard,
   times: (number | null)[]
+}
+
+// What reads moves off the board frame by frame: BeamTracker, or PlayTracker in play mode
+export interface MoveTracker {
+  update(update: number[][], now: number, game: TrackedGame): BeamMove | null
 }
 
 interface History {
@@ -76,15 +61,7 @@ interface History {
   greedy: string | null
 }
 
-// Watches for the opponent's last move on the board: a tracker from the position before it, whose only moves are
-// that move, alone or with a reply
-interface Waiting {
-  position: Position,
-  movesPairs: MovesPair[],
-  tracker: BayesianTracker
-}
-
-export class BeamTracker {
+export class BeamTracker implements MoveTracker {
   readonly #options: BeamOptions;
   readonly #trackerOptions: BayesianOptions;
   // The game up to the moves that are final, and the histories on from it. Null until the first frame.
@@ -92,8 +69,6 @@ export class BeamTracker {
   #final: string[] = [];
   #finalTimes: (number | null)[] = [];
   #histories: History[] | null = null;
-  // While the board does not show the opponent's last move yet, in play mode
-  #waiting: Waiting | null = null;
   // The moves the app's game had when this tracker last checked or changed it, to see if anything else changed it
   #known: string | null = null;
   // The game last shown, as SAN with the provisional move, to show a change only once
@@ -115,18 +90,7 @@ export class BeamTracker {
   update(update: number[][], now: number, game: TrackedGame): BeamMove | null {
     let histories = this.#histories;
     if (histories === null || game.start !== this.#start || game.moves !== this.#known) {
-      // Kept at once, so frames spent waiting for the opponent's move add up instead of each starting again
       histories = this.#restart(game);
-      this.#histories = histories;
-    }
-    if (this.#waiting !== null) {
-      const { tracker, movesPairs, position } = this.#waiting;
-      const move = tracker.update(update, now, { movesPairs, position });
-      if (move === null || move.greedy) {
-        return null;
-      }
-      // The board has caught up, so the user's move is looked for from this frame on
-      this.#waiting = null;
     }
     const next: History[] = [];
     for (const history of histories) {
@@ -162,7 +126,7 @@ export class BeamTracker {
     this.#finalise(kept);
     this.#histories = kept;
 
-    const best = this.#options.finalOnly ? { sans: [], times: [], greedy: null } : kept[0];
+    const best = kept[0];
     const sans = [...this.#final, ...best.sans, ...((best.greedy === null) ? [] : [best.greedy])];
     const shown = sans.join(" ");
     if (shown === this.#shown) {
@@ -186,7 +150,6 @@ export class BeamTracker {
     this.#finalTimes = this.#final.map(() => null);
     this.#known = game.moves;
     this.#shown = this.#final.join(" ");
-    this.#waiting = this.#options.waitForOpponent && game.fromOpponent ? this.#waitFor(board) : null;
     const position = board.position.clone();
     return [{
       sans: [], times: [], position, movesPairs: this.#movesPairs(position),
@@ -228,20 +191,6 @@ export class BeamTracker {
       history.sans = history.sans.slice(shared);
       history.times = history.times.slice(shared);
     }
-  }
-
-  // Waits for the board's last move, or doesn't if there is none
-  #waitFor(board: GameBoard): Waiting | null {
-    const last = board.history[board.history.length - 1];
-    if (last === undefined) {
-      return null;
-    }
-    const before = new GameBoard(board.start);
-    board.history.slice(0, -1).forEach(({ san }) => { before.playSan(san); });
-    const position = before.position.clone();
-    const movesPairs = this.#movesPairs(position).filter(({ move1 }) => move1.san === last.san);
-    return (movesPairs.length === 0) ? null
-      : { position, movesPairs, tracker: new BayesianTracker(this.#trackerOptions) };
   }
 
   #movesPairs(position: Position): MovesPair[] {

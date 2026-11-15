@@ -185,8 +185,8 @@ describe("createRecorder", () => {
     expect(recorder.game.moves).toBe("");
   });
 
-  it("only shows final moves when asked", async () => {
-    const updates = record({ finalMovesOnly: true });
+  it("in play mode, shows only the user's move, once certain", async () => {
+    const updates = record({ play: true });
     recorder.start();
     await show([START_FEN, 1], [AFTER_E4, 4]);
     expect(recorder.game.moves).toBe("1. e4");

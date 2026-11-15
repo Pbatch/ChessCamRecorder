@@ -18,9 +18,6 @@ export interface TrackerMove {
 }
 
 export interface BayesianOptions {
-  // Whether a move is shown provisionally until its reply confirms it. Without, a move is played for good on its own
-  // share, as play mode needs, since its moves go to Lichess straight away.
-  provisional: boolean,
   // Chance that the game moves on by one more move, per REFERENCE_INTERVAL. Like evidenceWeight, it is scaled to the
   // time between frames, so the tracker behaves the same however many frames a second the device manages.
   moveChance: number,
@@ -50,14 +47,14 @@ export interface BayesianOptions {
 // tuning gave them (see this file's git history), as they barely change the result. The model manages about 10
 // frames a second on a Pixel 7a's CPU, above the app's cap of 4.
 export const DEFAULT_BAYESIAN_OPTIONS: BayesianOptions = {
-  provisional: true, moveChance: 0.01, temperature: 3.0, floor: 0.05, evidenceWeight: 2.5, threshold: 0.95,
+  moveChance: 0.01, temperature: 3.0, floor: 0.05, evidenceWeight: 2.5, threshold: 0.95,
   flipChance: 0.05
 };
 
 // The time between frames, in ms, that moveChance and evidenceWeight are given for: the app's 4 frames a second
-const REFERENCE_INTERVAL = 250;
+export const REFERENCE_INTERVAL = 250;
 // The most a frame counts for, in ms, so one frame after a stall can't carry seconds of evidence
-const MAX_INTERVAL = 1000;
+export const MAX_INTERVAL = 1000;
 
 // One way the game may have gone on since the last move played: a move, or a move and its reply
 interface Hypothesis {
@@ -183,7 +180,7 @@ export class BayesianTracker {
     }
     const hypotheses = this.#hypotheses;
     const n = hypotheses.length;
-    const { provisional, temperature, floor, threshold, flipChance } = this.#options;
+    const { temperature, floor, threshold, flipChance } = this.#options;
     // The settings for the time since the last frame
     const steps = interval / REFERENCE_INTERVAL;
     const moveChance = (steps === 1) ? this.#options.moveChance : 1 - (1 - this.#options.moveChance) ** steps;
@@ -206,17 +203,7 @@ export class BayesianTracker {
     // Each way weighed by how well it explains the frame, against the position not changing. Each square's
     // probabilities are softened by the temperature, then mixed with the floor.
     const logs = this.#logs;
-    for (let square = 0; square < 64; square++) {
-      const row = square * NUM_LABELS;
-      let sum = 0;
-      for (let label = 0; label < NUM_LABELS; label++) {
-        logs[row + label] = Math.max(update[square][label], 1e-30) ** (1 / temperature);
-        sum += logs[row + label];
-      }
-      for (let label = 0; label < NUM_LABELS; label++) {
-        logs[row + label] = Math.log((1 - floor) * logs[row + label] / sum + floor / NUM_LABELS);
-      }
-    }
+    frameLogs(update, temperature, floor, logs);
     // How well the position not changing explains the frame as read, and turned round (square s read as 63 - s)
     const root = this.#root;
     let upright = 0;
@@ -278,15 +265,14 @@ export class BayesianTracker {
         replied[groups[first]] += next[i];
       }
     }
-    const confirmed = provisional ? replied : groupShares;
-    const best = largest(confirmed);
-    if (confirmed[best] > threshold) {
+    const best = largest(replied);
+    if (replied[best] > threshold) {
       this.#played = this.#firsts[this.#pick(best, shares)];
       this.#shown = null;
       return { san: this.#played, greedy: false };
     }
     const shownGroup = largest(groupShares);
-    if (provisional && groupShares[shownGroup] > threshold) {
+    if (groupShares[shownGroup] > threshold) {
       const first = this.#pick(shownGroup, shares);
       const shown = this.#firsts[first];
       if (this.#ends[first]) {
@@ -395,8 +381,24 @@ export class BayesianTracker {
   }
 }
 
+// Each square's log-probability of each label in one frame (`update`, 64x13 in square order), into `logs`: softened by
+// the temperature, then mixed with the floor (see BayesianOptions)
+export const frameLogs = (update: number[][], temperature: number, floor: number, logs: Float64Array) => {
+  for (let square = 0; square < 64; square++) {
+    const row = square * NUM_LABELS;
+    let sum = 0;
+    for (let label = 0; label < NUM_LABELS; label++) {
+      logs[row + label] = Math.max(update[square][label], 1e-30) ** (1 / temperature);
+      sum += logs[row + label];
+    }
+    for (let label = 0; label < NUM_LABELS; label++) {
+      logs[row + label] = Math.log((1 - floor) * logs[row + label] / sum + floor / NUM_LABELS);
+    }
+  }
+}
+
 // log(e^a + e^b), without overflow
-const mix = (a: number, b: number): number => {
+export const mix = (a: number, b: number): number => {
   const top = Math.max(a, b);
   return (top === -Infinity) ? top : top + Math.log(Math.exp(a - top) + Math.exp(b - top));
 }

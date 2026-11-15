@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { BeamTracker, PLAY_BEAM_OPTIONS, PLAY_TRACKER_OPTIONS } from "./beamTracker.js";
+import { BeamTracker } from "./beamTracker.js";
 import { makeUpdatePayload } from "../game.js";
-import { GameBoard } from "../chess/board.js";
 import { replay } from "./replay.js";
 import { makeGame, oneHotState, videoProbs } from "../test/helpers.js";
 import { START_FEN } from "../constants.js";
@@ -68,60 +67,5 @@ describe("BeamTracker", () => {
     run(state, [START_FEN, 3]);
     expect(state.game.moves).toBe("1. e4 e5");
     expect(run(state, [AFTER_E4_E5, 2], [AFTER_E4_E5_NF3, 3]).game.moves).toBe("1. e4 e5 2. Nf3");
-  });
-
-  it("in play mode, sends only final moves, a couple of seconds after they are played", () => {
-    const moves = replay(video([START_FEN, 3], [AFTER_E4, 4]), FPS, 0,
-      new BeamTracker(PLAY_TRACKER_OPTIONS, PLAY_BEAM_OPTIONS));
-    expect(sans(moves)).toEqual(["e4"]);
-    // The board shows e4 from 3s
-    expect(moves[0].time).toBeGreaterThan(4.5);
-    expect(moves[0].time).toBeLessThanOrEqual(5.5);
-  });
-
-  it("in play mode, never sends a move from a single clear frame of another position", () => {
-    for (const stray of [AFTER_E4, AFTER_E4_E5]) {
-      const probs = video([START_FEN, 1], [stray, 0.25], [START_FEN, 3]);
-      expect(sans(replay(probs, FPS, 0, new BeamTracker(PLAY_TRACKER_OPTIONS, PLAY_BEAM_OPTIONS)))).toEqual([]);
-    }
-  });
-
-  it("in play mode, never sends a move shown for less than a second", () => {
-    // Three frames: at 4 a second, a move held for a whole second (4 frames) is sent
-    const probs = video([START_FEN, 3], [AFTER_E4, 0.75], [START_FEN, 4]);
-    expect(sans(replay(probs, FPS, 0, new BeamTracker(PLAY_TRACKER_OPTIONS, PLAY_BEAM_OPTIONS)))).toEqual([]);
-  });
-
-  describe("in play mode, after the opponent's move comes from Lichess", () => {
-    // 1. d4 Nf6 2. Nf3 d5 3. Bf4 e6 4. e3 c5 5. Nbd2, then Lichess sends 5... Nc6
-    const board = new GameBoard(START_FEN);
-    ["d2d4", "g8f6", "g1f3", "d7d5", "c1f4", "e7e6", "e2e3", "c7c5", "b1d2"].forEach((uci) => { board.playUci(uci); });
-    const before = board.fen;
-    board.playUci("b8c6");
-    const after = board.fen;
-    const fromLichess: Game = { ...makeGame(), ...makeUpdatePayload(board, true) };
-    board.playUci("e3e4");
-    const afterE4 = board.fen;
-    const play = (): Run =>
-      ({ tracker: new BeamTracker(PLAY_TRACKER_OPTIONS, PLAY_BEAM_OPTIONS), game: fromLichess, clock: 0 });
-
-    it("sends nothing while the board still shows the position before it", () => {
-      // Without waiting, 6. Bb8 Nxb8 explains the knight still on b8 and was sent
-      const eager = { ...play(), tracker: new BeamTracker(PLAY_TRACKER_OPTIONS, { ...PLAY_BEAM_OPTIONS, waitForOpponent: false }) };
-      expect(run(eager, [before, 10]).game.moves).toContain("6. Bb8");
-      expect(run(play(), [before, 10]).game).toBe(fromLichess);
-    });
-
-    it("sends the user's move once the board shows the opponent's", () => {
-      expect(run(play(), [before, 3], [after, 2], [afterE4, 3]).game.moves).toMatch(/Nc6 6\. e4$/);
-    });
-
-    it("sends the user's move when both are played at once", () => {
-      expect(run(play(), [before, 3], [afterE4, 4]).game.moves).toMatch(/Nc6 6\. e4$/);
-    });
-
-    it("doesn't wait when the board already shows it", () => {
-      expect(run(play(), [after, 2], [afterE4, 3]).game.moves).toMatch(/Nc6 6\. e4$/);
-    });
   });
 });

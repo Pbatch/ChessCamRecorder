@@ -104,10 +104,6 @@ describe("BayesianTracker", () => {
     expect(returned(new BayesianTracker(), AFTER_E4_E5)).toEqual([{ san: "e4", greedy: true }, { san: "e4", greedy: false }]);
   });
 
-  it("plays a move for good straight away without provisional moves", () => {
-    expect(returned(new BayesianTracker({ provisional: false }), AFTER_E4)).toEqual([{ san: "e4", greedy: false }]);
-  });
-
   it("does not play a move whose destination the frames don't show", () => {
     // e2 is empty, but the pawn is as likely on e3 as on e4
     const frame = oneHotState(START_FEN);

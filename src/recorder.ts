@@ -3,7 +3,8 @@ import { START_FEN } from "./constants.js";
 import { type RecorderError, toRecorderError } from "./errors.js";
 import { keptTimes, makePgn, makeUpdatePayload, newGame, updateTimes } from "./game.js";
 import type { CornerName, Game, Roi } from "./types.js";
-import { BeamTracker, PLAY_BEAM_OPTIONS, PLAY_TRACKER_OPTIONS } from "./vision/beamTracker.js";
+import { BeamTracker, type MoveTracker } from "./vision/beamTracker.js";
+import { PlayTracker } from "./vision/playTracker.js";
 import { type Detection, getOrientation, type Model } from "./vision/model.js";
 import { videoReady } from "./vision/video.js";
 
@@ -22,10 +23,12 @@ export interface RecorderOptions {
   start?: string,
   // Whether to time each move, for [%emt] in the PGN
   timed?: boolean,
-  // Whether to report only moves that are final, which can't be taken back. By default a move is reported as soon as
-  // it's seen, and may be corrected a few seconds later (see onUpdate). Final moves come about 1.5 s after they are played, and
-  // suit moves that go straight to an online game.
-  finalMovesOnly?: boolean,
+  // Whether the user plays one side against an online opponent (play mode): only the user's move is read off the
+  // board, and only once it is certain, as it goes straight to the online game, which can't take it back (about 1.75 s
+  // after it is played). The opponent's moves come from the online game: pass each with setGame and fromOpponent, and
+  // the recorder reads the user's next move once the board shows it. By default every move is read, as soon as it's
+  // seen, and may be corrected a few seconds later (see onUpdate).
+  play?: boolean,
   // Detections a second at normal playback speed
   maxFps?: number,
   // The game, whenever the moves change. A later update may take back or replace recent moves, as the tracker corrects
@@ -95,15 +98,14 @@ const sameGame =(a: Pick<Game, "start" | "moves" | "fromOpponent">, b: Pick<Game
 
 // Reads moves off a board in a video, a frame at a time, until destroyed. Starts paused: call start().
 export const createRecorder = (options: RecorderOptions): Recorder => {
-  const { model, timed = true, finalMovesOnly = false, maxFps = DEFAULT_MAX_FPS } = options;
+  const { model, timed = true, play = false, maxFps = DEFAULT_MAX_FPS } = options;
   let video: HTMLVideoElement = options.video;
   let roi: Roi | null = options.roi ?? null;
   let game: Game = newGame(options.start ?? START_FEN);
 
-  // Follows several ways the game may have gone, so a move can still be corrected a few seconds on. With final moves
-  // only, it shows a move once it can't be taken back.
-  const makeTracker = () => finalMovesOnly ? new BeamTracker(PLAY_TRACKER_OPTIONS, PLAY_BEAM_OPTIONS)
-    : new BeamTracker();
+  // Follows several ways the game may have gone, so a move can still be corrected a few seconds on. In play mode, it
+  // shows the user's move once it is certain, and the board may be behind the opponent's.
+  const makeTracker = (): MoveTracker => play ? new PlayTracker() : new BeamTracker();
   let tracker = makeTracker();
   let playing: boolean = false;
   let direction: number[] | null = null;

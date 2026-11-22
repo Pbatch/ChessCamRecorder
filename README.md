@@ -26,8 +26,7 @@ const model = await loadModel();
 const recorder = createRecorder({
   model,
   video: document.querySelector("video")!,
-  roi: { x: 438, y: 384, width: 444, height: 280 }, // where the board is, in video pixels
-  onUpdate: (game) => console.log(game.moves)       // e.g. "1. e4 e5 2. Nf3"
+  onUpdate: (game) => console.log(game.moves) // e.g. "1. e4 e5 2. Nf3"
 });
 
 // 3. Start recording when the game starts
@@ -42,8 +41,10 @@ For a full working page with a camera or video file, see [`examples/demo`](examp
 
 ## Good to know
 
-- **Tell it where the board is.** `roi` is the rectangle around the board in the video. Without it the whole frame is
-  used, which only works if the board fills the picture.
+- **It finds the board itself.** The recorder looks for the board in the whole frame, then reads a crop around it,
+  moving the crop if the camera moves. No moves are read while it's looking. `onRoi` tells you where the crop is (for
+  example, to draw it), and `null` while it's still looking. If it picks the wrong area, pass the rectangle around the
+  board yourself as `roi` (in video pixels), or later with `setRoi`; `setRoi(null)` goes back to finding it.
 - **Start when the game starts.** Anything else on camera (an empty board, hands setting up the pieces) can be mistaken
   for moves.
 - **Earlier moves can change.** If the recorder realises it misread a move, often because a hand was in the way, it

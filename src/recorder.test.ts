@@ -3,8 +3,9 @@ import { START_FEN } from "./constants.js";
 import { RecorderError } from "./errors.js";
 import { createRecorder, type Recorder, type RecorderOptions } from "./recorder.js";
 import { oneHotState } from "./test/helpers.js";
-import type { Game } from "./types.js";
+import type { CornerName, Game, Roi } from "./types.js";
 import type { Model } from "./vision/model.js";
+import type { BoardFit } from "./vision/board.js";
 
 const AFTER_E4 = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1";
 const AFTER_E4_E5 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2";
@@ -16,6 +17,8 @@ let frames: Map<number, FrameRequestCallback>;
 let nextFrameId: number;
 let board: string;
 let failure: Error | null;
+// Runs each time the clock moves on, before the recorder's tick, e.g. to fire a video's frame callbacks
+let onClock: (() => void) | null;
 
 const video = {
   videoWidth: 1280, videoHeight: 720, readyState: 4, seeking: false, srcObject: {}, currentSrc: "", playbackRate: 1
@@ -26,8 +29,9 @@ const model: Model = {
     if (failure !== null) {
       throw failure;
     }
-    return { update: oneHotState(board), direction: null };
+    return { update: oneHotState(board), direction: null, board: null };
   },
+  locates: false,
   delete: () => undefined
 };
 
@@ -35,6 +39,7 @@ const model: Model = {
 const run = async (seconds: number) => {
   for (let elapsed = 0; elapsed < 1000 * seconds; elapsed += FRAME_MS) {
     clock += FRAME_MS;
+    onClock?.();
     const due = [...frames.values()];
     frames.clear();
     for (const callback of due) {
@@ -43,6 +48,9 @@ const run = async (seconds: number) => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 }
+
+// Lets reads that were just answered finish
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 // The board as each scene shows it, for the given seconds
 const show = async (...scenes: [string, number][]) => {
@@ -65,6 +73,7 @@ beforeEach(() => {
   nextFrameId = 1;
   board = START_FEN;
   failure = null;
+  onClock = null;
   vi.spyOn(performance, "now").mockImplementation(() => clock);
   // The recorder's ticker: each tick it asks for runs on the test's next frame
   vi.stubGlobal("Worker", class {
@@ -227,6 +236,157 @@ describe("createRecorder", () => {
     recorder.start();
     await show([START_FEN, 2], [AFTER_E4, 3]);
     expect(recorder.game.moves).toBe("1. e4");
+  });
+
+  // A video whose frame callbacks fire every `callbackMs` and which decodes a new frame every `decodeMs`
+  const pacedVideo = (callbackMs: number, decodeMs: number): HTMLVideoElement => {
+    let pending: VideoFrameRequestCallback | null = null;
+    let lastCallback = 0;
+    onClock = () => {
+      if (pending !== null && clock - lastCallback >= callbackMs) {
+        lastCallback = clock;
+        const callback = pending;
+        pending = null;
+        callback(clock, {} as VideoFrameCallbackMetadata);
+      }
+    };
+    return {
+      ...video,
+      requestVideoFrameCallback: (callback: VideoFrameRequestCallback) => {
+        pending = callback;
+        return 1;
+      },
+      cancelVideoFrameCallback: () => {
+        pending = null;
+      },
+      getVideoPlaybackQuality: () => ({ totalVideoFrames: Math.floor(clock / decodeMs) })
+    } as unknown as HTMLVideoElement;
+  }
+
+  it("keeps the full rate when frame callbacks slow to once a second but the video still decodes", async () => {
+    // As in a hidden tab with DevTools (or any CDP client) attached: the callbacks come just often enough that the
+    // video never counts as stalled
+    const fps: (number | null)[] = [];
+    record({ video: pacedVideo(1000, 1000 / 30), onFps: (value) => fps.push(value) });
+    recorder.start();
+    await show([START_FEN, 4]);
+    expect(fps.at(-1)).toBeCloseTo(4);
+  });
+
+  it("reads a slow camera no faster than it gives frames", async () => {
+    const fps: (number | null)[] = [];
+    record({ video: pacedVideo(500, 500), onFps: (value) => fps.push(value) });
+    recorder.start();
+    await show([START_FEN, 4]);
+    expect(fps.at(-1)).toBeCloseTo(2);
+  });
+
+  it("finds the board itself and reads its crop, with a model that gives positions", async () => {
+    // The board is 200px wide at (500, 300) of the video, in the region read or the whole frame
+    const regions: (Roi | null)[] = [];
+    const locating: Model = {
+      detect: async (_video, roi = null) => {
+        regions.push(roi);
+        const corners = [[500, 300], [700, 300], [700, 500], [500, 500]];
+        return { update: oneHotState(board), direction: null, board: { corners, inliers: 64, sigma: 0.1 } };
+      },
+      locates: true,
+      delete: () => undefined
+    };
+    const rois: (Roi | null)[] = [];
+    // The whole-frame read shows a move that isn't there, which mustn't be used
+    board = AFTER_E4;
+    record({ model: locating, onRoi: (roi) => rois.push(roi) });
+    recorder.start();
+    await run(0.25);
+    // The whole frame, then the crop its fit proposes, read again
+    const crop = { x: 470, y: 270, width: 260, height: 260 };
+    expect(regions).toEqual([null, crop]);
+    expect(rois).toEqual([crop]);
+    await show([START_FEN, 2], [AFTER_E4, 3]);
+    expect(regions.slice(1).every((roi) => roi?.x === 470)).toBe(true);
+    expect(recorder.game.moves).toBe("1. e4");
+    // A region given overrides it, and clearing it looks for the board again
+    recorder.setRoi({ x: 0, y: 0, width: 640, height: 360 });
+    await run(0.25);
+    expect(regions.at(-1)).toEqual({ x: 0, y: 0, width: 640, height: 360 });
+    expect(rois.at(-1)).toBeNull();
+    recorder.setRoi(null);
+    await run(0.25);
+    expect(regions.slice(-2)).toEqual([null, crop]);
+  });
+
+  it("reads the frame again in the crop a rough fit of the whole frame proposes, and crops to the board found there", async () => {
+    // The board is small in the whole frame, so its fit there is too unsure (sigma 1.2) to set the crop; in the crop it
+    // proposes, the fit is sure. The reads of the whole frame and of the proposal show a move that isn't there.
+    const regions: (Roi | null)[] = [];
+    const corners = [[500, 300], [700, 300], [700, 500], [500, 500]];
+    const small: Model = {
+      detect: async (_video, roi = null) => {
+        regions.push(roi);
+        return { update: oneHotState(board), direction: null, board: { corners, inliers: 64, sigma: (roi === null) ? 1.2 : 0.1 } };
+      },
+      locates: true,
+      delete: () => undefined
+    };
+    const rois: (Roi | null)[] = [];
+    board = AFTER_E4;
+    record({ model: small, onRoi: (roi) => rois.push(roi) });
+    recorder.start();
+    await run(0.25);
+    const crop = { x: 470, y: 270, width: 260, height: 260 };
+    expect(regions).toEqual([null, crop]);
+    expect(rois).toEqual([crop]);
+    await show([START_FEN, 2], [AFTER_E4, 3]);
+    expect(regions.slice(2).every((roi) => roi?.x === 470)).toBe(true);
+    expect(recorder.game.moves).toBe("1. e4");
+  });
+
+  it("drops a frame read before the board was looked for afresh, as in a new video", async () => {
+    // Each read waits until the test lets it finish
+    const pending: ((fit?: BoardFit) => void)[] = [];
+    const corners = [[500, 300], [700, 300], [700, 500], [500, 500]];
+    const slow: Model = {
+      detect: () => new Promise((resolve) => {
+        pending.push((fit = { corners, inliers: 64, sigma: 0.1 }) => resolve({ update: oneHotState(board), direction: [1, 0], board: fit }));
+      }),
+      locates: true,
+      delete: () => undefined
+    };
+    const rois: (Roi | null)[] = [];
+    const orientations: CornerName[][] = [];
+    record({ model: slow, onRoi: (roi) => rois.push(roi), onOrientation: (o) => orientations.push(o) });
+    recorder.start();
+    await run(0.25);
+    expect(pending).toHaveLength(1);
+    // A new video starts while the frame is read
+    recorder.setRoi(null);
+    pending.shift()?.();
+    await flush();
+    expect(rois).toEqual([]);
+    expect(orientations).toEqual([]);
+    // A frame without a good fit gives no orientation
+    await run(0.25);
+    pending.shift()?.({ corners, inliers: 64, sigma: 3 });
+    await flush();
+    expect(orientations).toEqual([]);
+    // The next frame finds the board, read again in the crop its fit proposes, and reports its orientation
+    await run(0.25);
+    pending.shift()?.();
+    await flush();
+    expect(pending).toHaveLength(1);
+    pending.shift()?.();
+    await flush();
+    expect(rois).toHaveLength(1);
+    expect(orientations).toEqual([["a8", "h8", "h1", "a1"]]);
+    // After another reset, the same orientation is reported again, as the app clears it for a new video
+    recorder.setRoi(null);
+    await run(0.25);
+    pending.shift()?.();
+    await flush();
+    pending.shift()?.();
+    await flush();
+    expect(orientations).toEqual([["a8", "h8", "h1", "a1"], ["a8", "h8", "h1", "a1"]]);
   });
 
   it("stops for good once destroyed", async () => {

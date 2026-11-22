@@ -1,12 +1,15 @@
 import { MODEL_SIZE, LABEL_MAP, NUM_LABELS, zeros } from "../constants.js";
 import { RecorderError } from "../errors.js";
 import type { CornerName, Roi } from "../types.js";
+import { type BoardFit, fitBoard } from "./board.js";
 import type { WorkerCall, WorkerRequest, WorkerResponse } from "./worker.js";
 
-// Square probabilities, and where each square query looked (null for models without that output)
+// Square probabilities, where each square query looked, and where each square is with its sigma (each null for models
+// without that output)
 interface PieceModelOutputs {
   probs: Float32Array,
-  centroids: Float32Array | null
+  centroids: Float32Array | null,
+  positions: Float32Array | null
 }
 
 // The loaded model, in a CPU worker. A null video gives blank pixels, for the warm-up.
@@ -20,10 +23,10 @@ const CLASS_SYMBOLS: string[] = [".", "P", "N", "B", "R", "Q", "K", "p", "n", "b
 const NUM_PROBS: number = 64 * CLASS_SYMBOLS.length;
 // Region corners clockwise from the top left when rank 8 is at the top
 const CORNERS: CornerName[] = ["a8", "h8", "h1", "a1"];
-// chessq-chesscam-mnv4m-320-v1, a MobileNetV4 Conv-M model distilled from v5: about 100 ms a frame on a Pixel 7a's
-// CPU, against v5's 400, and 23.9 MB against 62.5. Pinned to a commit so a new upload cannot change the model under a
-// deployed app.
-export const DEFAULT_MODEL_URL: string = "https://huggingface.co/PBatch23888/chessq-chesscam/resolve/0c3de0dd34a5e1a60d69e942045fb6dc0f82aeb4/chessq-chesscam-mnv4m-320-v1-fp16.tflite";
+// chessq-chesscam-mnv4m-320-v2, a MobileNetV4 Conv-M model (about 100 ms a frame on a Pixel 7a's CPU, 24.0 MB) that
+// also gives each square's position, so the recorder can find the board itself. Pinned to a commit so a new upload
+// cannot change the model under a deployed app.
+export const DEFAULT_MODEL_URL: string = "https://huggingface.co/PBatch23888/chessq-chesscam/resolve/88c6e78d5e88725d199e5cbb6aa19acf80e143f8/chessq-chesscam-mnv4m-320-v2-fp16.tflite";
 // The LiteRT.js runtime must match the library exactly, so the dependency is pinned to this version
 export const LITERT_VERSION: string = "2.6.0";
 export const DEFAULT_WASM_URL: string = `https://cdn.jsdelivr.net/npm/@litertjs/core@${LITERT_VERSION}/wasm/`;
@@ -38,7 +41,8 @@ const toOutputs = (arrays: Float32Array[]): PieceModelOutputs => {
   if (probs === undefined) {
     throw new Error("Model has no square probabilities");
   }
-  return { probs, centroids: arrays.find((array) => array.length === 64 * 2) ?? null };
+  return { probs, centroids: arrays.find((array) => array.length === 64 * 2) ?? null,
+    positions: arrays.find((array) => array.length === 64 * 3) ?? null };
 }
 
 // The CPU model runs in a worker, as each run blocks its thread for the whole inference. The URL is relative to the
@@ -103,16 +107,18 @@ const loadWorker = async (wasmUrl: string, modelUrl: string): Promise<PieceModel
   };
 }
 
-// One frame's reading: a 64x13 state in square order (a1..h8), and the direction of rank 8 in video pixels, if the
-// model gives it
+// One frame's reading: a 64x13 state in square order (a1..h8), the direction of rank 8 in video pixels, if the
+// model gives it, and the board fitted to the squares' positions, if the model gives them and a board could be fitted
 export interface Detection {
   update: number[][],
-  direction: number[] | null
+  direction: number[] | null,
+  board: BoardFit | null
 }
 
 export interface ModelOptions {
-  // The .tflite model, which must take 320x320 RGBA and give 64x13 square probabilities. Self-host it to load it
-  // from the page's own origin, e.g. where huggingface.co is blocked.
+  // The .tflite model, which must take 320x320 RGBA and give 64x13 square probabilities. A model that also gives
+  // 64x3 square positions (x, y and sigma, in [0, 1] of the input) lets the recorder find the board itself. Self-host
+  // it to load it from the page's own origin, e.g. where huggingface.co is blocked.
   modelUrl?: string,
   // Where LiteRT.js's runtime (the files in @litertjs/core/wasm/) is served, ending in a slash. Self-host it for
   // offline use; it must be version LITERT_VERSION.
@@ -122,25 +128,28 @@ export interface ModelOptions {
 export interface Model {
   // Reads one frame of the video, cropped to the region if given (otherwise the whole frame)
   detect: (video: HTMLVideoElement, roi?: Roi | null) => Promise<Detection>,
+  // Whether the model gives the squares' positions, so it can find the board itself
+  readonly locates: boolean,
   // Frees the model. A later loadModel() loads it again.
   delete: () => void
 }
 
 let loaded: { key: string, model: Promise<Model> } | null = null;
 
-const makeModel = (pieceModel: PieceModel): Model => {
+const makeModel = (pieceModel: PieceModel, locates: boolean): Model => {
   let current: PieceModel | null = pieceModel;
   return {
+    locates,
     detect: async (video, roi = null) => {
       if (current === null) {
         throw new RecorderError("not-ready", "The model is not loaded");
       }
-      const { probs, centroids } = await current.run(video, roi);
-      const width: number = (roi === null) ? video.videoWidth : roi.width;
-      const height: number = (roi === null) ? video.videoHeight : roi.height;
+      const { probs, centroids, positions } = await current.run(video, roi);
+      const rect: Roi = roi ?? { x: 0, y: 0, width: video.videoWidth, height: video.videoHeight };
       return {
         update: toUpdate(probs),
-        direction: (centroids === null) ? null : toDirection(centroids, width, height)
+        direction: (centroids === null) ? null : toDirection(centroids, rect.width, rect.height),
+        board: (positions === null) ? null : fitBoard(positions, rect)
       };
     },
     delete: () => {
@@ -162,7 +171,12 @@ export const loadModel = (options: ModelOptions = {}): Promise<Model> => {
     return (loaded.key === key) ? loaded.model
       : Promise.reject(new Error("A different model is already loaded; delete it first"));
   }
-  const model: Promise<Model> = loadWorker(wasmUrl, modelUrl).then(makeModel);
+  const model: Promise<Model> = loadWorker(wasmUrl, modelUrl)
+    .then(async (pieceModel) => {
+      // Whether the model gives positions, from a run on blank pixels
+      const outputs = await pieceModel.run(null, null);
+      return makeModel(pieceModel, outputs.positions !== null);
+    });
   loaded = { key, model };
   void model.catch(() => {
     if (loaded?.model === model) {
@@ -186,7 +200,14 @@ const getPixels = (video: HTMLVideoElement, roi: Roi | null): Uint8Array<ArrayBu
   if (roi === null) {
     ctx.drawImage(video, 0, 0, MODEL_SIZE, MODEL_SIZE);
   } else {
-    ctx.drawImage(video, roi.x, roi.y, roi.width, roi.height, 0, 0, MODEL_SIZE, MODEL_SIZE);
+    // The whole frame is drawn, placed so that the region fills the canvas, rather than the region as a source
+    // rectangle: Firefox takes a source rectangle in the video's stored pixels, before any rotation it is tagged with
+    // (e.g. a phone video filmed upside down), and so reads the wrong part of the picture. Whatever of the region is
+    // past the video's edges stays black, as in training.
+    ctx.fillStyle = "black";
+    ctx.fillRect(0, 0, MODEL_SIZE, MODEL_SIZE);
+    const sx = MODEL_SIZE / roi.width, sy = MODEL_SIZE / roi.height;
+    ctx.drawImage(video, -roi.x * sx, -roi.y * sy, video.videoWidth * sx, video.videoHeight * sy);
   }
   const imageData: ImageData = ctx.getImageData(0, 0, MODEL_SIZE, MODEL_SIZE);
   return new Uint8Array<ArrayBuffer>(imageData.data.buffer);

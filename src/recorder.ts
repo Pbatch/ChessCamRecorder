@@ -6,6 +6,8 @@ import type { CornerName, Game, Roi } from "./types.js";
 import { BeamTracker, type MoveTracker } from "./vision/beamTracker.js";
 import { PlayTracker } from "./vision/playTracker.js";
 import { type Detection, getOrientation, type Model } from "./vision/model.js";
+import { AutoCrop } from "./vision/autoCrop.js";
+import { boardDirection, goodFit } from "./vision/board.js";
 import { videoReady } from "./vision/video.js";
 
 // How often the FPS reported updates, in ms
@@ -16,8 +18,9 @@ const DEFAULT_MAX_FPS = 4;
 export interface RecorderOptions {
   model: Model,
   video: HTMLVideoElement,
-  // The board's region of the video, in video pixels. Without one the whole frame is read, which only works when the
-  // board fills it.
+  // The board's region of the video, in video pixels. Without one, a model that gives the squares' positions finds the
+  // board and crops to it itself (see onRoi); other models read the whole frame, which only works when the board
+  // fills it.
   roi?: Roi | null,
   // The start position as FEN, by default the standard one
   start?: string,
@@ -40,6 +43,9 @@ export interface RecorderOptions {
   onFps?: (fps: number | null) => void,
   // The board's corners, clockwise from the region's top left, when the board turns
   onOrientation?: (corners: CornerName[]) => void,
+  // The region the recorder cropped to itself, when it changes (no region was given): null while it looks for the
+  // board in the whole frame
+  onRoi?: (roi: Roi | null) => void,
   // A frame failed; detection carries on with the next
   onError?: (error: RecorderError) => void
 }
@@ -59,6 +65,7 @@ export interface Recorder {
   // Starts or resumes reading the board. A pause counts as no time at all, for move times or for corrections.
   start: () => void,
   pause: () => void,
+  // The board's region, or null to have the recorder find the board itself
   setRoi: (roi: Roi | null) => void,
   setVideo: (video: HTMLVideoElement) => void,
   // Changes the game other than by the board; the tracker starts again from it, with its moves taken as final
@@ -87,11 +94,16 @@ const createTicker = (onTick: () => void) => {
   };
 }
 
-// requestVideoFrameCallback only fires for frames the page shows, so it stops while the tab is hidden or the app is in
-// the background, though the video still has new frames to read. After this long without one, every frame counts as
-// new. Checking document.hidden instead misses some of these cases, e.g. a backgrounded Android Chrome with DevTools
-// attached.
+// requestVideoFrameCallback only fires for frames the page shows, so while the tab is hidden or the app is in the
+// background it stops, or (desktop Chrome) fires about once a second, though the video still has new frames to read.
+// So a frame also counts as new when the video has decoded more frames since the last read, and after this long
+// without either, every frame counts as new. Checking document.hidden instead misses some of these cases, e.g. a
+// backgrounded Android Chrome with DevTools attached.
 const FRAME_STALL_MS = 1000;
+
+// Frames the video has decoded so far, or null where the browser doesn't count them
+const decodedFrames = (video: HTMLVideoElement): number | null =>
+  (typeof video.getVideoPlaybackQuality === "function") ? video.getVideoPlaybackQuality().totalVideoFrames : null;
 
 const sameGame =(a: Pick<Game, "start" | "moves" | "fromOpponent">, b: Pick<Game, "start" | "moves" | "fromOpponent">) =>
   (a.start === b.start) && (a.moves === b.moves) && (a.fromOpponent === b.fromOpponent);
@@ -107,9 +119,26 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
   // shows the user's move once it is certain, and the board may be behind the opponent's.
   const makeTracker = (): MoveTracker => play ? new PlayTracker() : new BeamTracker();
   let tracker = makeTracker();
+  // The crop the recorder keeps itself, with no region given
+  const autoCrop = new AutoCrop();
+  let autoRoi: Roi | null = null;
   let playing: boolean = false;
   let direction: number[] | null = null;
   let orientationKey: string = "";
+  // Counts the times the board was looked for afresh, so a frame read before then is not used after
+  let resets: number = 0;
+  // Looks for the board afresh, e.g. in a new video, whose board may be elsewhere and turned another way
+  const resetAutoCrop = () => {
+    resets += 1;
+    autoCrop.reset();
+    if (autoRoi !== null) {
+      autoRoi = null;
+      options.onRoi?.(null);
+    }
+    // Reported again from the next frame, even if it is the same
+    direction = null;
+    orientationKey = "";
+  }
   // Detections started since the FPS was last reported, which is about once a second
   let fpsSince: number = 0;
   let fpsFrames: number = 0;
@@ -123,6 +152,8 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
   let newFrame: boolean = true;
   // When requestVideoFrameCallback last fired, or the video was first watched
   let lastFrameTime: number = 0;
+  // How many frames the video had decoded at the last read
+  let readFrames: number | null = null;
   // A clock that stops while detection is paused, in ms. The tracker runs on it, so a pause neither counts as time
   // for its settings nor uses up the time a move can still be corrected in, and moves are timed on it, from where it
   // was when detection last started on a game without moves.
@@ -164,6 +195,7 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
 
   const detectFrame = async (now: number) => {
     newFrame = (frameCallbackId === undefined);
+    readFrames = decodedFrames(video);
     const minFrameTime: number = 1000 / (maxFps * (video.playbackRate || 1));
     // Steps by the interval, so the frames a display ticks on do not round the rate down,
     // but catches up by at most half an interval after a slow frame
@@ -179,8 +211,24 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
     }
     fpsFrames += 1;
 
-    const detection = await model.detect(video, roi);
-    const { update, direction: newDirection } = detection;
+    const auto: boolean = (roi === null) && model.locates;
+    const resetsBefore: number = resets;
+    let detection = await model.detect(video, auto ? autoCrop.roi : roi);
+    // The board was looked for afresh while the frame was read (e.g. a new video started), so the frame is of the old
+    // one
+    if (resets !== resetsBefore) {
+      return;
+    }
+    // While looking for the board, a rough fit of the whole frame proposes a crop to read the frame again in, whose
+    // fit decides (see AutoCrop.propose)
+    const proposed = auto ? autoCrop.propose(detection.board, video.videoWidth, video.videoHeight) : null;
+    if (proposed !== null) {
+      detection = await model.detect(video, proposed);
+      if (resets !== resetsBefore) {
+        return;
+      }
+    }
+    const { update, board } = detection;
     // A NaN would stay in the smoothed state for good, and no move scores above 0 against it
     if (!update.every((square) => square.every(Number.isFinite))) {
       console.warn("Skipped a frame with non-finite probabilities");
@@ -191,16 +239,21 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
       return;
     }
     running = true;
-    const elapsed = timed ? (playClock - recordStart) : undefined;
-    const shown = tracker.update(update, playClock, game);
-    if (shown !== null) {
-      // A corrected move is timed from when it was played, which may be a few seconds back
-      const ago = shown.times.map((time) => (time === null) ? null : playClock - time);
-      const payload = makeUpdatePayload(shown.board);
-      game = { ...payload, start: game.start, times: updateTimes(game, payload.moves, elapsed, ago) };
-      options.onUpdate?.(game);
+    // Only reads of the board's crop with a good fit are used (see AutoCrop.update)
+    let useRead: boolean = true;
+    if (auto && (roi === null)) {
+      useRead = autoCrop.update(board, video.videoWidth, video.videoHeight, playClock);
+      if (autoCrop.roi !== autoRoi) {
+        autoRoi = autoCrop.roi;
+        options.onRoi?.(autoRoi);
+      }
     }
-
+    // The board's own corners give its direction more surely than where the model looked. With a model that finds the
+    // board, a frame without a good fit has no direction: where the model looked is noise when no board is in view.
+    let newDirection: number[] | null = detection.direction;
+    if (model.locates) {
+      newDirection = goodFit(board) ? boardDirection(board.corners) : null;
+    }
     // The first frame starts the smoothed direction, so it does not wait to climb from zero
     if (newDirection?.every(Number.isFinite)) {
       // Smoothed, so a board near 45 degrees does not flicker between orientations
@@ -212,6 +265,20 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
         options.onOrientation?.(orientation);
       }
     }
+    if (!useRead) {
+      options.onDetect?.(detection);
+      return;
+    }
+    const elapsed = timed ? (playClock - recordStart) : undefined;
+    const shown = tracker.update(update, playClock, game);
+    if (shown !== null) {
+      // A corrected move is timed from when it was played, which may be a few seconds back
+      const ago = shown.times.map((time) => (time === null) ? null : playClock - time);
+      const payload = makeUpdatePayload(shown.board);
+      game = { ...payload, start: game.start, times: updateTimes(game, payload.moves, elapsed, ago) };
+      options.onUpdate?.(game);
+    }
+
     options.onDetect?.(detection);
   }
 
@@ -232,7 +299,8 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
       // changed other than by it.
       if (!playing || !videoReady(video)) {
         stopped();
-      } else if ((newFrame || (now - lastFrameTime) >= FRAME_STALL_MS) && now >= nextRunTime) {
+      } else if ((newFrame || (decodedFrames(video) ?? 0) > (readFrames ?? Infinity)
+        || (now - lastFrameTime) >= FRAME_STALL_MS) && now >= nextRunTime) {
         await detectFrame(now);
       }
     } catch (error) {
@@ -264,8 +332,13 @@ export const createRecorder = (options: RecorderOptions): Recorder => {
     },
     setRoi: (next) => {
       roi = next;
+      // Looks for the board afresh if the region is cleared later
+      resetAutoCrop();
     },
     setVideo: (next) => {
+      if (next !== video) {
+        resetAutoCrop();
+      }
       video = next;
     },
     setGame: (change) => {

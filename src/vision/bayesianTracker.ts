@@ -39,7 +39,7 @@ export interface BayesianOptions {
   flipChance: number
 }
 
-// Set for the current model (chessq-chesscam-mnv4m-320-v1) by replaying 42 recorded blitz games with the beam
+// Set for chessq-chesscam-mnv4m-320-v1, and kept for v2, the current model, by replaying 42 recorded blitz games with the beam
 // (dev/replay.mjs), with edits to fix capped at 10 a game. Temperature 3.0 and evidenceWeight 2.5 need 10 edits (10
 // uncapped; 39 of 42 games perfect). Temperatures 2.5 to 4.0 did as well with weights about 0.83 times the
 // temperature, and no setting of temperatures 2.0 to 4.0 and weights 0.4 to 0.83 times the temperature did better;
